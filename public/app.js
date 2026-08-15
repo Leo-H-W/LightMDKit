@@ -28,6 +28,8 @@
   let fileHistory = [];
   // 当前已加载的文件夹句柄，用于刷新时重新扫描
   let currentFolderHandle = null;
+  // 图片相对路径 -> objectURL，避免同一图片被重复读取
+  const imageUrlCache = new Map();
 
   // CodeMirror 编辑器实例（可选增强，初始化失败时回退到 textarea）
   let cmEditor = null;
@@ -247,6 +249,7 @@
     headingOffsets = parseHeadingOffsets(text);
     const html = MdRender.renderMarkdown(text, marked);
     contentEl.innerHTML = html;
+    await resolveImages();
     // 编辑模式下保持编辑器/文本区内容与文件内容一致，并尽量保留当前视图位置
     if (isEditMode) {
       if (cmEditor) {
@@ -279,6 +282,56 @@
     });
   }
 
+  function clearImageCache() {
+    for (const url of imageUrlCache.values()) {
+      URL.revokeObjectURL(url);
+    }
+    imageUrlCache.clear();
+  }
+
+  // 把 markdown 里的相对图片路径解析成 object URL，否则浏览器会按页面域名去找，
+  // 拿不到磁盘上同目录的图片。跳过 http(s)/data/blob/锚点等绝对引用。
+  async function resolveImages() {
+    if (!currentFolderHandle) return;
+    const imgs = contentEl.querySelectorAll('img');
+    for (const img of imgs) {
+      const rawSrc = img.getAttribute('src') || '';
+      if (/^(https?:|data:|blob:|#|\/\/)/i.test(rawSrc)) continue;
+      let rel = rawSrc.replace(/^\.\//, '');
+      rel = rel.split(/[?#]/)[0];
+      if (!rel) continue;
+      try {
+        rel = decodeURIComponent(rel);
+      } catch (e) {
+        // 非法 URL 编码，保持原样
+      }
+
+      try {
+        let url = imageUrlCache.get(rel);
+        if (!url) {
+          // 按 / 拆段，支持子目录，逐级 getDirectoryHandle
+          const segments = rel.split('/').filter(Boolean);
+          let dir = currentFolderHandle;
+          let fileHandle = null;
+          for (let i = 0; i < segments.length; i++) {
+            if (i === segments.length - 1) {
+              fileHandle = await dir.getFileHandle(segments[i]);
+            } else {
+              dir = await dir.getDirectoryHandle(segments[i]);
+            }
+          }
+          const file = await fileHandle.getFile();
+          url = URL.createObjectURL(file);
+          imageUrlCache.set(rel, url);
+        }
+        img.src = url;
+      } catch (e) {
+        // 文件不存在或读取失败时保留原 src，便于排查
+        console.warn('[md-view] 图片加载失败:', rel, e);
+      }
+    }
+  }
+
   async function selectFolder() {
     if (!window.showDirectoryPicker) {
       setStatus('浏览器不支持文件夹选择，请使用 Chrome 或 Edge', 'error');
@@ -289,6 +342,7 @@
       setStatus('等待选择文件夹...');
       const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
 
+      clearImageCache();
       currentFolderHandle = dirHandle;
       folderLabel.textContent = dirHandle.name;
       folderLabel.title = dirHandle.name;
@@ -468,6 +522,7 @@
       // 从编辑模式切换到浏览模式：先保存
       await saveCurrentFile();
       contentEl.innerHTML = MdRender.renderMarkdown(currentMarkdownText, marked);
+      await resolveImages();
       renderToc();
       renderMermaid();
       if (cmEditor) cmEditor.getWrapperElement().style.display = 'none';
