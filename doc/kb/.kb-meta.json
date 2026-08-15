@@ -1,0 +1,13 @@
+{
+  "generated_at": "2026-05-01T08:34:34Z",
+  "git_commit": null,
+  "git_branch": null,
+  "generator_version": "1.0.0",
+  "repository_info": {
+    "primary_language": "JavaScript",
+    "frameworks": ["Express", "marked"],
+    "is_library": false,
+    "has_api": true
+  },
+  "repository_dependencies": ["express", "marked"]
+}
