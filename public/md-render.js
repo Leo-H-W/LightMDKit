@@ -77,15 +77,14 @@
 
     while (i < lines.length) {
       const line = lines[i];
+      const trimmed = line.trim();
 
       if (numCols === null) {
-        if (line.includes('|')) {
+        // 只有遇到分隔行（| --- | --- |）才进入表格合并模式
+        if (trimmed.startsWith('|')) {
           const cells = splitTableCells(line);
           if (isDelimiterRow(cells)) {
             numCols = cells.length;
-            out.push(line);
-            i++;
-            continue;
           }
         }
         out.push(line);
@@ -93,24 +92,29 @@
         continue;
       }
 
-      if (line.includes('|')) {
+      // 表格模式下，行首的 | 标志新一行的开始；其余行都是上一行末格子的续行。
+      // 之前用“格子数已凑满 numCols”来判定一行结束，会把最后一个格子后面的续行
+      // （不再带 | 的纯文本续行）漏掉，导致它们被当成独立行甚至并进下一行首格。
+      if (trimmed.startsWith('|')) {
         const cells = splitTableCells(line);
-        if (cells.length >= numCols) {
+        if (isDelimiterRow(cells)) {
+          // 嵌套表/新表头的分隔行，原样输出
           out.push(line);
           i++;
           continue;
         }
         let merged = cells.slice();
         i++;
-        while (i < lines.length && merged.length < numCols) {
+        while (i < lines.length) {
           const cont = lines[i];
-          if (/^\s*$/.test(cont)) break;
+          const ctrim = cont.trim();
+          if (ctrim === '' || ctrim.startsWith('|')) break;
           if (cont.includes('|')) {
             const contCells = splitTableCells(cont);
             merged[merged.length - 1] += '<br>' + contCells[0];
             merged = merged.concat(contCells.slice(1));
           } else {
-            merged[merged.length - 1] += '<br>' + cont.trim();
+            merged[merged.length - 1] += '<br>' + ctrim;
           }
           i++;
         }
@@ -118,6 +122,7 @@
         continue;
       }
 
+      // 表格模式下遇到非 | 开头的行（如空行、正文），说明表格结束
       numCols = null;
       out.push(line);
       i++;
