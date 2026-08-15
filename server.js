@@ -4,6 +4,7 @@ const path = require('path');
 const { exec, spawn } = require('child_process');
 const net = require('net');
 const { marked } = require('marked');
+const { renderMarkdown } = require('./public/md-render.js');
 const os = require('os');
 const readline = require('readline');
 
@@ -151,7 +152,7 @@ app.post('/api/load', (req, res) => {
 
     try {
       content = fs.readFileSync(targetFile, 'utf-8');
-      html = marked.parse(content, { gfm: true, breaks: true });
+      html = renderMarkdown(content, marked);
       currentFile = targetFile;
     } catch (err) {
       return res.status(500).json({ error: 'Failed to read file: ' + err.message });
@@ -188,7 +189,7 @@ app.get('/api/file', (req, res) => {
 
   try {
     const content = fs.readFileSync(resolvedPath, 'utf-8');
-    const html = marked.parse(content, { gfm: true, breaks: true });
+    const html = renderMarkdown(content, marked);
     res.json({ content, html, path: resolvedPath });
   } catch (err) {
     res.status(500).json({ error: 'Failed to read file: ' + err.message });
@@ -216,7 +217,7 @@ app.post('/api/refresh', (req, res) => {
 
   try {
     const content = fs.readFileSync(resolvedPath, 'utf-8');
-    const html = marked.parse(content, { gfm: true, breaks: true });
+    const html = renderMarkdown(content, marked);
     res.json({ content, html, path: resolvedPath });
   } catch (err) {
     res.status(500).json({ error: 'Failed to read file: ' + err.message });

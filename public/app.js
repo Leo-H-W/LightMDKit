@@ -245,7 +245,7 @@
     const text = await file.text();
     currentMarkdownText = text;
     headingOffsets = parseHeadingOffsets(text);
-    const html = marked.parse(text, { gfm: true, breaks: true });
+    const html = MdRender.renderMarkdown(text, marked);
     contentEl.innerHTML = html;
     // 编辑模式下保持编辑器/文本区内容与文件内容一致，并尽量保留当前视图位置
     if (isEditMode) {
@@ -467,7 +467,7 @@
     if (isEditMode) {
       // 从编辑模式切换到浏览模式：先保存
       await saveCurrentFile();
-      contentEl.innerHTML = marked.parse(currentMarkdownText, { gfm: true, breaks: true });
+      contentEl.innerHTML = MdRender.renderMarkdown(currentMarkdownText, marked);
       renderToc();
       renderMermaid();
       if (cmEditor) cmEditor.getWrapperElement().style.display = 'none';
