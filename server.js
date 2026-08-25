@@ -1,18 +1,17 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const { exec, spawn } = require('child_process');
+const { spawn } = require('child_process');
 const net = require('net');
 const { marked } = require('marked');
 const { renderMarkdown } = require('./public/md-render.js');
 const os = require('os');
-const readline = require('readline');
 
 const app = express();
 const PORT = 3456;
 
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 
 const isWindows = os.platform() === 'win32';
 
@@ -227,43 +226,26 @@ app.post('/api/refresh', (req, res) => {
 const url = `http://localhost:${PORT}`;
 const DAEMON_ENV = 'MD_VIEW_DAEMON';
 
-function askQuestion(query) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => rl.question(query, (ans) => { rl.close(); resolve(ans); }));
-}
-
-function findPidByPort(port) {
-  return new Promise((resolve) => {
-    const cmd = isWindows ? `netstat -ano | findstr :${port}` : `lsof -t -i:${port}`;
-    exec(cmd, { encoding: 'utf8' }, (err, stdout) => {
-      if (err || !stdout) return resolve(null);
-      if (isWindows) {
-        const lines = stdout.split('\n');
-        for (const line of lines) {
-          if (line.includes('LISTENING')) {
-            const parts = line.trim().split(/\s+/);
-            const pid = parts[parts.length - 1];
-            if (/^\d+$/.test(pid)) return resolve(pid);
-          }
-        }
-        resolve(null);
-      } else {
-        const pid = stdout.trim().split('\n')[0];
-        resolve(pid || null);
-      }
-    });
-  });
-}
-
-function killProcess(pid) {
-  return new Promise((resolve) => {
-    const cmd = isWindows ? `taskkill /PID ${pid} /F` : `kill -9 ${pid}`;
-    exec(cmd, (err) => resolve(!err));
-  });
-}
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function openBrowser(url) {
+  const platform = os.platform();
+  let command, args;
+  if (platform === 'win32') {
+    command = 'cmd';
+    args = ['/c', 'start', '', url];
+  } else if (platform === 'darwin') {
+    command = 'open';
+    args = [url];
+  } else {
+    command = 'xdg-open';
+    args = [url];
+  }
+  const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+  child.on('error', () => {});
+  child.unref();
 }
 
 function isPortInUse(port) {
@@ -317,34 +299,15 @@ async function main() {
   if (!portBusy) {
     spawnDaemon();
     console.log(`md-view started at ${url}`);
+    await sleep(2000);
+    openBrowser(url);
     process.exit(0);
   }
 
   console.log(`\n端口 ${PORT} 已被占用，md-view 可能已在运行。`);
-  const pid = await findPidByPort(PORT);
-  if (pid) {
-    console.log(`占用进程 PID: ${pid}`);
-  }
-
-  const answer = await askQuestion('\n请选择：\n1. 重新运行（结束旧进程并重启）\n2. 显示访问 URL\n请输入选项 (1/2): ');
-  const choice = answer.trim();
-
-  if (choice === '1') {
-    if (pid) {
-      console.log('正在结束旧进程...');
-      const killed = await killProcess(pid);
-      if (!killed) {
-        console.log('警告：未能结束旧进程，尝试继续启动...');
-      }
-      await sleep(1000);
-    }
-    spawnDaemon();
-    console.log(`md-view restarted at ${url}`);
-    process.exit(0);
-  } else {
-    console.log(`\nmd-view is already running at ${url}`);
-    process.exit(0);
-  }
+  console.log(`打开访问地址: ${url}`);
+  openBrowser(url);
+  process.exit(0);
 }
 
 main();

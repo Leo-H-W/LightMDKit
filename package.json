@@ -3,11 +3,24 @@
   "version": "1.0.0",
   "description": "Local markdown viewer with GitHub style",
   "main": "server.js",
+  "bin": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "build:win": "pkg . --output dist/md-view.exe"
+  },
+  "pkg": {
+    "targets": [
+      "node18-win-x64"
+    ],
+    "assets": [
+      "public/**/*"
+    ]
   },
   "dependencies": {
     "express": "^4.18.2",
     "marked": "^12.0.0"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
   }
 }

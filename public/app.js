@@ -10,6 +10,7 @@
   const btnEdit = document.getElementById('btn-edit');
   const editorEl = document.getElementById('editor');
   const btnBack = document.getElementById('btn-back');
+  const btnNewTab = document.getElementById('btn-new-tab');
   const resizeHandle = document.querySelector('.resize-handle');
 
   // { name: string, handle: FileSystemFileHandle }[]
@@ -463,6 +464,10 @@
   }
 
   btnRefresh.addEventListener('click', refreshCurrentFile);
+
+  btnNewTab.addEventListener('click', () => {
+    window.open(window.location.href, '_blank');
+  });
 
   // 拦截文档中相对路径的 markdown 文件链接，在同目录下时直接在当前页面打开
   contentEl.addEventListener('click', async (e) => {
