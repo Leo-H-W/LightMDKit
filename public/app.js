@@ -23,6 +23,9 @@
   let headingOffsets = {};
   // 是否处于编辑模式
   let isEditMode = false;
+  // 编辑模式下的自动保存定时器（每 3s 保存一次）
+  let autosaveTimer = null;
+  const AUTOSAVE_INTERVAL_MS = 3000;
   // 记录切换模式前视口最上方的 heading id，用于切回浏览模式时恢复滚动位置
   let lastViewHeadingId = null;
   // 文件浏览历史栈，用于链接跳转后返回
@@ -328,7 +331,7 @@
         img.src = url;
       } catch (e) {
         // 文件不存在或读取失败时保留原 src，便于排查
-        console.warn('[md-view] 图片加载失败:', rel, e);
+        console.warn('[LightMDKit] 图片加载失败:', rel, e);
       }
     }
   }
@@ -392,6 +395,7 @@
       currentFile = name;
       if (isEditMode) {
         // 切换文件时自动切回浏览模式
+        stopAutosave();
         if (cmEditor) cmEditor.getWrapperElement().style.display = 'none';
         contentEl.style.display = '';
         btnEdit.textContent = '编辑';
@@ -501,7 +505,7 @@
     await loadFile(prevFile);
   });
 
-  async function saveCurrentFile() {
+  async function saveCurrentFile(silent = false) {
     if (!currentFile) return;
     const entry = currentFiles.find(f => f.name === currentFile);
     if (!entry) return;
@@ -510,11 +514,31 @@
       await writable.write(cmEditor ? cmEditor.getValue() : editorEl.value);
       await writable.close();
       currentMarkdownText = cmEditor ? cmEditor.getValue() : editorEl.value;
-      setStatus('已保存', 'success');
+      if (!silent) setStatus('已保存', 'success');
     } catch (e) {
       console.error(e);
       setStatus('保存失败: ' + e.message, 'error');
       throw e;
+    }
+  }
+
+  function startAutosave() {
+    if (autosaveTimer) return;
+    autosaveTimer = setInterval(async () => {
+      if (!isEditMode) return;
+      try {
+        await saveCurrentFile(true);
+      } catch (e) {
+        // 自动保存失败已在 saveCurrentFile 内提示，停止定时器避免反复报错
+        stopAutosave();
+      }
+    }, AUTOSAVE_INTERVAL_MS);
+  }
+
+  function stopAutosave() {
+    if (autosaveTimer) {
+      clearInterval(autosaveTimer);
+      autosaveTimer = null;
     }
   }
 
@@ -524,7 +548,8 @@
       return;
     }
     if (isEditMode) {
-      // 从编辑模式切换到浏览模式：先保存
+      // 从编辑模式切换到浏览模式：先保存，再停止自动保存
+      stopAutosave();
       await saveCurrentFile();
       contentEl.innerHTML = MdRender.renderMarkdown(currentMarkdownText, marked);
       await resolveImages();
@@ -557,6 +582,7 @@
       btnEdit.textContent = '浏览';
       btnEdit.title = '切换回浏览模式并保存';
       isEditMode = true;
+      startAutosave();
 
       if (cmEditor) {
         if (topHeadingId && headingOffsets[topHeadingId] !== undefined) {

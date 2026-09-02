@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const exePath = process.argv[2] || path.join(__dirname, '..', 'dist', 'md-view.exe');
+const exePath = process.argv[2] || path.join(__dirname, '..', 'dist', 'lightmdkit.exe');
 
 if (!fs.existsSync(exePath)) {
   console.error(`EXE not found: ${exePath}`);

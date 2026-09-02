@@ -1,6 +1,6 @@
 # API 索引
 
-> **重要说明**: 当前前端（`md-view/public/app.js`）使用浏览器原生 File System Access API 直接读写本地文件，**未调用**以下后端 `/api/*` 接口。后端 API 作为备用通道存在，可供外部系统调用。
+> **重要说明**: 当前前端（`LightMDKit/public/app.js`）使用浏览器原生 File System Access API 直接读写本地文件，**未调用**以下后端 `/api/*` 接口。后端 API 作为备用通道存在，可供外部系统调用。
 
 ## 概览
 
@@ -15,26 +15,26 @@
 
 | 方法 | 路径 | 功能说明 | 认证 | 代码位置 | 主要参数 |
 |------|------|----------|------|----------|----------|
-| POST | /api/select-folder | 弹出系统文件夹选择对话框，返回用户选择的目录路径 | 否 | `md-view/server.js:19` | 无（请求体为空） |
-| POST | /api/load | 扫描指定目录下的 Markdown 文件，可选加载指定文件内容并返回 HTML | 否 | `md-view/server.js:97` | folderPath（必需）, filePath（可选） |
+| POST | /api/select-folder | 弹出系统文件夹选择对话框，返回用户选择的目录路径 | 否 | `LightMDKit/server.js:19` | 无（请求体为空） |
+| POST | /api/load | 扫描指定目录下的 Markdown 文件，可选加载指定文件内容并返回 HTML | 否 | `LightMDKit/server.js:97` | folderPath（必需）, filePath（可选） |
 
 ### 文件读取
 
 | 方法 | 路径 | 功能说明 | 认证 | 代码位置 | 主要参数 |
 |------|------|----------|------|----------|----------|
-| GET | /api/file | 读取单个文件的原始内容和渲染后的 HTML | 否 | `md-view/server.js:171` | path（查询参数，必需） |
+| GET | /api/file | 读取单个文件的原始内容和渲染后的 HTML | 否 | `LightMDKit/server.js:171` | path（查询参数，必需） |
 
 ### 文件刷新
 
 | 方法 | 路径 | 功能说明 | 认证 | 代码位置 | 主要参数 |
 |------|------|----------|------|----------|----------|
-| POST | /api/refresh | 重新读取指定文件的最新内容和 HTML | 否 | `md-view/server.js:199` | filePath（必需） |
+| POST | /api/refresh | 重新读取指定文件的最新内容和 HTML | 否 | `LightMDKit/server.js:199` | filePath（必需） |
 
 ### 静态资源服务
 
 | 方法 | 路径 | 功能说明 | 认证 | 代码位置 | 主要参数 |
 |------|------|----------|------|----------|----------|
-| GET | / | 提供前端静态文件服务（HTML/CSS/JS） | 否 | `md-view/server.js:14` | 无 |
+| GET | / | 提供前端静态文件服务（HTML/CSS/JS） | 否 | `LightMDKit/server.js:14` | 无 |
 
 ## 响应格式
 
@@ -86,7 +86,7 @@
 **修改接口步骤**：
 1. 在表格中找到目标接口
 2. 查看"代码位置"列，找到文件和行号
-3. 打开 `md-view/server.js` 直接修改对应路由处理函数
+3. 打开 `LightMDKit/server.js` 直接修改对应路由处理函数
 
 **要了解接口详细参数**：
 1. 找到代码位置
@@ -95,10 +95,10 @@
 
 ## 常用接口快速链接
 
-- 选择文件夹：`POST /api/select-folder` → `md-view/server.js:19`
-- 加载文件夹/文件：`POST /api/load` → `md-view/server.js:97`
-- 读取单个文件：`GET /api/file` → `md-view/server.js:171`
-- 刷新文件内容：`POST /api/refresh` → `md-view/server.js:199`
+- 选择文件夹：`POST /api/select-folder` → `LightMDKit/server.js:19`
+- 加载文件夹/文件：`POST /api/load` → `LightMDKit/server.js:97`
+- 读取单个文件：`GET /api/file` → `LightMDKit/server.js:171`
+- 刷新文件内容：`POST /api/refresh` → `LightMDKit/server.js:199`
 
 ---
 

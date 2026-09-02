@@ -1,8 +1,8 @@
 # 基于 Git 记录的代码优化分析
 
-> 项目：md-view  
+> 项目：LightMDKit  
 > 分析日期：2026-04-24  
-> 文档路径：`md-view/doc/kb/基于git记录优化.md`
+> 文档路径：`LightMDKit/doc/kb/基于git记录优化.md`
 
 ---
 
@@ -18,14 +18,14 @@
 
 | 时间 | 文件 | 说明 |
 |------|------|------|
-| 14:34 | `md-view/public/app.js` | 最新修改，前端核心逻辑 |
-| 14:30 | `md-view/public/index.html` | 前端页面结构 |
-| 14:30 | `md-view/public/style.css` | 前端样式 |
-| 10:31 | `md-view/server.js` | 后端服务入口 |
-| 10:35 | `md-view/.claude/settings.local.json` | Claude 配置（非业务代码） |
-| 09:15 | `md-view/package-lock.json` | 依赖锁定 |
-| 09:14 | `md-view/test-sample.md` | 测试样本文件 |
-| 08:57 | `md-view/package.json` | 项目配置 |
+| 14:34 | `LightMDKit/public/app.js` | 最新修改，前端核心逻辑 |
+| 14:30 | `LightMDKit/public/index.html` | 前端页面结构 |
+| 14:30 | `LightMDKit/public/style.css` | 前端样式 |
+| 10:31 | `LightMDKit/server.js` | 后端服务入口 |
+| 10:35 | `LightMDKit/.claude/settings.local.json` | Claude 配置（非业务代码） |
+| 09:15 | `LightMDKit/package-lock.json` | 依赖锁定 |
+| 09:14 | `LightMDKit/test-sample.md` | 测试样本文件 |
+| 08:57 | `LightMDKit/package.json` | 项目配置 |
 
 **时间跨度**：约 **6 小时**（08:57 ~ 14:34），所有代码在半天内完成。
 
@@ -37,16 +37,16 @@
 
 ### 2.1 高频修改区域（时间排序）
 
-1. **`md-view/public/app.js`**（14:34 最后修改）
+1. **`LightMDKit/public/app.js`**（14:34 最后修改）
    - 前端核心交互逻辑，包含：文件夹选择、文件加载、目录生成、编辑模式切换、保存、返回历史、侧边栏拖拽调整、TOC 高亮联动等
    - 代码量最大（约 470 行），功能最密集
    - **推断为当前最活跃的修改区域**
 
-2. **`md-view/public/index.html` + `style.css`**（14:30 左右修改）
+2. **`LightMDKit/public/index.html` + `style.css`**（14:30 左右修改）
    - 与 `app.js` 同步迭代，说明前端三件套（HTML/CSS/JS）是协同开发的
    - `index.html` 中缓存版本号 `?v=7` 表明至少经历了 7 轮以上调试迭代
 
-3. **`md-view/server.js`**（10:31 修改，早于前端）
+3. **`LightMDKit/server.js`**（10:31 修改，早于前端）
    - 后端 API 服务，提供文件夹对话框（Windows PowerShell）、文件读取、刷新接口
    - 修改时间较早且之后未再更新，**推断后端接口已相对稳定**
 
@@ -93,10 +93,10 @@
 由于项目无版本控制，**强烈建议立即执行以下操作**：
 
 ```bash
-cd md-view
+cd LightMDKit
 git init
 git add .
-git commit -m "feat: initial md-view markdown viewer"
+git commit -m "feat: initial LightMDKit markdown viewer"
 ```
 
 并建立提交规范，例如：
@@ -111,11 +111,11 @@ git commit -m "feat: initial md-view markdown viewer"
 
 | 优先级 | 建议 | 目标文件 |
 |--------|------|----------|
-| 高 | 将 `app.js` 按功能拆分为模块（如 `folder.js`、`editor.js`、`toc.js`、`router.js`） | `md-view/public/app.js` |
-| 高 | 引入前端构建工具（Vite / Rollup）或至少使用 ES Modules 拆分文件 | `md-view/public/` |
-| 中 | `server.js` 中的端口占用检测和守护进程逻辑抽离为独立模块 | `md-view/server.js` |
-| 中 | 添加错误边界处理（如 `marked.parse` 失败时的降级展示） | `md-view/public/app.js` |
-| 低 | 将内联 PowerShell 脚本抽离为独立 `.ps1` 文件，便于维护 | `md-view/server.js` |
+| 高 | 将 `app.js` 按功能拆分为模块（如 `folder.js`、`editor.js`、`toc.js`、`router.js`） | `LightMDKit/public/app.js` |
+| 高 | 引入前端构建工具（Vite / Rollup）或至少使用 ES Modules 拆分文件 | `LightMDKit/public/` |
+| 中 | `server.js` 中的端口占用检测和守护进程逻辑抽离为独立模块 | `LightMDKit/server.js` |
+| 中 | 添加错误边界处理（如 `marked.parse` 失败时的降级展示） | `LightMDKit/public/app.js` |
+| 低 | 将内联 PowerShell 脚本抽离为独立 `.ps1` 文件，便于维护 | `LightMDKit/server.js` |
 
 ### 4.3 质量保障建议
 
@@ -144,7 +144,7 @@ git commit -m "feat: initial md-view markdown viewer"
 
 ## 5. 总结
 
-- **当前状态**：`md-view` 是一个在 2026-04-24 半天内快速完成的原型项目，**未使用 Git 版本控制**
+- **当前状态**：`LightMDKit` 是一个在 2026-04-24 半天内快速完成的原型项目，**未使用 Git 版本控制**
 - **核心风险**：所有代码历史丢失风险高，无法回溯、协作或做变更分析
 - **最优先行动**：初始化 Git 仓库并建立提交规范，随后对 `app.js` 进行模块化拆分
 - **后端稳定性**：`server.js` 修改较早且之后未动，相对成熟；前端 `app.js` 是当前最活跃、最需要关注的区域
