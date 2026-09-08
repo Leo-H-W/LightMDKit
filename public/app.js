@@ -12,6 +12,7 @@
   const btnBack = document.getElementById('btn-back');
   const btnNewTab = document.getElementById('btn-new-tab');
   const resizeHandle = document.querySelector('.resize-handle');
+  const dropOverlay = document.getElementById('drop-overlay');
 
   // { name: string, handle: FileSystemFileHandle }[]
   let currentFiles = [];
@@ -76,6 +77,11 @@
         statusEl.className = 'status';
       }
     }, 3000);
+  }
+
+  function isMarkdownName(name) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    return ext === 'md' || ext === 'markdown';
   }
 
   function escapeHtml(str) {
@@ -336,6 +342,38 @@
     }
   }
 
+  // 加载目录句柄：扫描目录中的 Markdown 文件并渲染目标文件。
+  // selectFolder（手动选择文件夹）与拖放打开（新标签页）共用此逻辑。
+  async function loadFolderHandle(dirHandle, preferredFileName) {
+    clearImageCache();
+    currentFolderHandle = dirHandle;
+    folderLabel.textContent = dirHandle.name;
+    folderLabel.title = dirHandle.name;
+
+    const files = [];
+    for await (const [name, handle] of dirHandle.entries()) {
+      if (handle.kind === 'file' && isMarkdownName(name)) {
+        files.push({ name, handle });
+      }
+    }
+    files.sort((a, b) => a.name.localeCompare(b.name));
+
+    currentFiles = files;
+    currentFile = null;
+    updateFileSelect();
+
+    if (files.length === 0) {
+      showEmptyState('该目录下没有找到 Markdown 文件');
+      setStatus('目录下无 Markdown 文件');
+      return;
+    }
+
+    const target = (preferredFileName && files.find(f => f.name === preferredFileName)) || files[0];
+    currentFile = target.name;
+    updateFileSelect();
+    await renderFile(target);
+  }
+
   async function selectFolder() {
     if (!window.showDirectoryPicker) {
       setStatus('浏览器不支持文件夹选择，请使用 Chrome 或 Edge', 'error');
@@ -345,37 +383,8 @@
     try {
       setStatus('等待选择文件夹...');
       const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-
-      clearImageCache();
-      currentFolderHandle = dirHandle;
-      folderLabel.textContent = dirHandle.name;
-      folderLabel.title = dirHandle.name;
-
-      const files = [];
-      for await (const [name, handle] of dirHandle.entries()) {
-        if (handle.kind === 'file') {
-          const ext = name.split('.').pop().toLowerCase();
-          if (ext === 'md' || ext === 'markdown') {
-            files.push({ name, handle });
-          }
-        }
-      }
-      files.sort((a, b) => a.name.localeCompare(b.name));
-
-      currentFiles = files;
-      currentFile = null;
-      updateFileSelect();
-
-      if (files.length === 0) {
-        showEmptyState('该目录下没有找到 Markdown 文件');
-        setStatus('目录下无 Markdown 文件');
-        return;
-      }
-
-      currentFile = files[0].name;
-      updateFileSelect();
-      await renderFile(files[0]);
-      setStatus('加载成功', 'success');
+      await loadFolderHandle(dirHandle);
+      if (currentFile) setStatus('加载成功', 'success');
     } catch (e) {
       if (e.name === 'AbortError') {
         setStatus('已取消');
@@ -509,6 +518,11 @@
     if (!currentFile) return;
     const entry = currentFiles.find(f => f.name === currentFile);
     if (!entry) return;
+    if (!entry.handle || typeof entry.handle.createWritable !== 'function') {
+      const msg = '当前文件来源不支持写回保存';
+      if (!silent) setStatus(msg, 'error');
+      throw new Error(msg);
+    }
     try {
       const writable = await entry.handle.createWritable();
       await writable.write(cmEditor ? cmEditor.getValue() : editorEl.value);
@@ -658,6 +672,225 @@
     document.body.style.userSelect = '';
   });
 
+  // ---------------- 拖放打开：拖入 .md 文件/文件夹时在新标签页打开 ----------------
+  // 句柄通过 IndexedDB 传递给新标签页（FileSystemHandle 可结构化克隆存储）。
+  // 注意：浏览器安全限制下，拖入的“文件”拿不到其父目录句柄，因此只有当文件
+  // 位于当前已加载的目录（isSameEntry 比对）或直接拖入文件夹时，新标签页才能
+  // 把文件列表定位到所在目录；否则只能打开单个文件。
+  const DROP_DB_NAME = 'lightmdkit';
+  const DROP_STORE = 'drops';
+  const DROP_TTL_MS = 24 * 60 * 60 * 1000;
+
+  function openDropDb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DROP_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains(DROP_STORE)) {
+          req.result.createObjectStore(DROP_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbPut(key, value) {
+    const db = await openDropDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DROP_STORE, 'readwrite');
+      tx.objectStore(DROP_STORE).put(value, key);
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+    });
+  }
+
+  async function idbGet(key) {
+    const db = await openDropDb();
+    return new Promise((resolve, reject) => {
+      const req = db.transaction(DROP_STORE, 'readonly').objectStore(DROP_STORE).get(key);
+      req.onsuccess = () => { db.close(); resolve(req.result); };
+      req.onerror = () => { db.close(); reject(req.error); };
+    });
+  }
+
+  // 清理过期的拖放记录（句柄权限仅随浏览器会话保留，记录无需长期存在）
+  async function idbPurgeExpired() {
+    try {
+      const db = await openDropDb();
+      await new Promise((resolve) => {
+        const tx = db.transaction(DROP_STORE, 'readwrite');
+        const store = tx.objectStore(DROP_STORE);
+        const now = Date.now();
+        store.openCursor().onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            const v = cursor.value;
+            if (!v || !v.ts || now - v.ts > DROP_TTL_MS) cursor.delete();
+            cursor.continue();
+          }
+        };
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => { db.close(); resolve(); };
+      });
+    } catch (e) { /* IndexedDB 不可用时忽略 */ }
+  }
+
+  function hasDraggedFiles(dataTransfer) {
+    return !!dataTransfer && Array.from(dataTransfer.types || []).includes('Files');
+  }
+
+  // 判断拖入的文件是否位于当前已加载的文件夹中，
+  // 若是，新标签页可以把文件列表直接定位到该目录
+  async function matchCurrentFolder(fileHandle) {
+    if (!currentFolderHandle || !fileHandle) return false;
+    for (const f of currentFiles) {
+      try {
+        if (await f.handle.isSameEntry(fileHandle)) return true;
+      } catch (e) { /* 比较失败时忽略 */ }
+    }
+    return false;
+  }
+
+  // 弹窗被拦截时，在状态栏给一个可点击的链接兜底
+  function showNewTabLink(url) {
+    statusEl.className = 'status';
+    statusEl.textContent = '新标签页被拦截，请 ';
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = '点击打开';
+    statusEl.appendChild(a);
+  }
+
+  async function openDropInNewTab(record) {
+    const id = (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+    record.ts = Date.now();
+    await idbPut(id, record);
+    const url = location.pathname + '?drop=' + encodeURIComponent(id);
+    const win = window.open(url, '_blank');
+    if (!win) showNewTabLink(url);
+  }
+
+  async function handleDroppedItems(dataTransfer) {
+    let opened = 0;
+    const tasks = [];
+    for (const item of Array.from(dataTransfer.items)) {
+      if (item.kind !== 'file') continue;
+      tasks.push((async () => {
+        let handle = null;
+        if (item.getAsFileSystemHandle) {
+          try {
+            handle = await item.getAsFileSystemHandle();
+          } catch (e) {
+            handle = null;
+          }
+        }
+        // 拖入的是文件夹：新标签页直接加载整个目录
+        if (handle && handle.kind === 'directory') {
+          await openDropInNewTab({ folderHandle: handle });
+          opened++;
+          return;
+        }
+        const file = handle ? await handle.getFile() : item.getAsFile();
+        if (!file || !isMarkdownName(file.name)) return;
+        const record = {
+          fileName: file.name,
+          fileHandle: handle || null,
+          fileBlob: handle ? null : file,
+          folderHandle: (await matchCurrentFolder(handle)) ? currentFolderHandle : null,
+        };
+        await openDropInNewTab(record);
+        opened++;
+      })());
+    }
+    await Promise.all(tasks);
+    if (opened === 0) {
+      setStatus('仅支持拖入 .md / .markdown 文件或文件夹');
+    }
+  }
+
+  let dragDepth = 0;
+  document.addEventListener('dragenter', (e) => {
+    if (!hasDraggedFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth++;
+    if (dropOverlay) dropOverlay.classList.remove('hidden');
+  });
+  // 必须阻止默认行为才允许 drop；仅针对文件拖拽，避免影响编辑器内的文本拖放
+  document.addEventListener('dragover', (e) => {
+    if (hasDraggedFiles(e.dataTransfer)) e.preventDefault();
+  });
+  document.addEventListener('dragleave', () => {
+    dragDepth--;
+    if (dragDepth <= 0) {
+      dragDepth = 0;
+      if (dropOverlay) dropOverlay.classList.add('hidden');
+    }
+  });
+  document.addEventListener('drop', async (e) => {
+    if (!hasDraggedFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    if (dropOverlay) dropOverlay.classList.add('hidden');
+    try {
+      await handleDroppedItems(e.dataTransfer);
+    } catch (err) {
+      console.error(err);
+      setStatus('拖放打开失败: ' + err.message, 'error');
+    }
+  });
+
+  // 新标签页启动时：检查 URL 中的 drop 参数，加载拖入的文件/文件夹
+  async function initFromDropParam() {
+    const dropId = new URLSearchParams(location.search).get('drop');
+    if (!dropId) return;
+
+    let record = null;
+    try {
+      record = await idbGet(dropId);
+    } catch (e) {
+      console.error(e);
+    }
+    if (!record) {
+      showEmptyState('拖放数据不存在或已过期，请重新拖入文件');
+      return;
+    }
+
+    try {
+      if (record.folderHandle) {
+        // 拿到了目录句柄（拖入文件夹，或文件位于当前已加载目录）：
+        // 文件列表定位到该目录，并选中对应文件
+        await loadFolderHandle(record.folderHandle, record.fileName);
+        document.title = record.folderHandle.name + ' - LightMDKit';
+        if (record.fileName) {
+          setStatus('已在新标签页打开 ' + record.fileName, 'success');
+        } else {
+          setStatus('已在新标签页打开拖入的文件夹', 'success');
+        }
+      } else {
+        // 浏览器安全限制：无法从拖入的单个文件获取其所在目录，仅打开该文件
+        const handle = record.fileHandle || {
+          getFile: async () => record.fileBlob,
+        };
+        currentFolderHandle = null;
+        currentFiles = [{ name: record.fileName, handle }];
+        currentFile = record.fileName;
+        folderLabel.textContent = record.fileName;
+        folderLabel.title = '浏览器安全限制，无法自动定位到文件所在目录';
+        document.title = record.fileName + ' - LightMDKit';
+        updateFileSelect();
+        await renderFile(currentFiles[0]);
+        setStatus('已打开拖入的文件（浏览器限制未定位所在目录，可手动“加载文件夹”）');
+      }
+    } catch (e) {
+      console.error(e);
+      setStatus('打开拖入内容失败: ' + e.message, 'error');
+    }
+  }
+
   fileSelect.addEventListener('change', async (e) => {
     const val = e.target.value;
     if (val === '__LOAD_FOLDER__') {
@@ -691,4 +924,6 @@
   };
 
   updateFileSelect();
+  idbPurgeExpired();
+  initFromDropParam();
 })();

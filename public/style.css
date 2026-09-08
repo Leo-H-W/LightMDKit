@@ -381,3 +381,30 @@ html {
 .markdown-body h6 {
   scroll-margin-top: 56px;
 }
+
+/* 拖放打开提示遮罩 */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 105, 218, 0.08);
+  border: 3px dashed #0969da;
+  /* 不拦截鼠标事件，保证底层元素能正常触发 drop */
+  pointer-events: none;
+}
+
+.drop-overlay.hidden {
+  display: none;
+}
+
+.drop-overlay-tip {
+  background: #ffffff;
+  color: #0969da;
+  font-size: 16px;
+  padding: 14px 28px;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
