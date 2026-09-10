@@ -13,6 +13,7 @@
   const btnNewTab = document.getElementById('btn-new-tab');
   const resizeHandle = document.querySelector('.resize-handle');
   const dropOverlay = document.getElementById('drop-overlay');
+  const btnMode = document.getElementById('btn-mode');
 
   // { name: string, handle: FileSystemFileHandle }[]
   let currentFiles = [];
@@ -24,6 +25,26 @@
   let headingOffsets = {};
   // 是否处于编辑模式
   let isEditMode = false;
+  // 界面模式：traditional = 传统模式（编辑/浏览 分离），modern = 现代模式（Typora 式常驻即时渲染）
+  const MODE_STORAGE_KEY = 'lightmdkit.mode';
+  let currentMode = loadModePreference();
+
+  function loadModePreference() {
+    try {
+      return localStorage.getItem(MODE_STORAGE_KEY) === 'modern' ? 'modern' : 'traditional';
+    } catch (e) {
+      // 隐私模式/禁用存储时 localStorage 会抛异常，回退传统模式
+      return 'traditional';
+    }
+  }
+
+  function saveModePreference(mode) {
+    try {
+      localStorage.setItem(MODE_STORAGE_KEY, mode);
+    } catch (e) {
+      // 存不下不影响本次使用
+    }
+  }
   // 编辑模式下的自动保存定时器（每 3s 保存一次）
   let autosaveTimer = null;
   const AUTOSAVE_INTERVAL_MS = 3000;
@@ -40,11 +61,27 @@
   let cmEditor = null;
   try {
     cmEditor = CodeMirror.fromTextArea(editorEl, {
-      mode: 'gfm',
+      // highlightFormatting 让语法标记带上 cm-formatting* class，现代模式靠它隐藏标记。
+      // 传统模式没有对应 CSS 规则，所以开启它对现有外观零影响。
+      //
+      // strikethrough 必须关掉：CM5 自带的删除线把单个 ~ 也当定界符
+      // （mode/markdown/markdown.js 里 `ch === '~' && stream.eatWhile(ch)` 后直接切换状态），
+      // 于是「1~100、2~5」这种范围写法会被误判成删除线，两个 ~ 还会被当成标记隐藏掉，
+      // 直接显示成「1100、25」。真正的 ~~...~~ 改由 markText 单独标注（见 refreshStrikeMarks）。
+      // 关掉它不影响传统模式：style.css 本来就没有样式化 cm-strikethrough / cm-formatting-strikethrough。
+      mode: { name: 'gfm', highlightFormatting: true, strikethrough: false },
+      // 保留 'github'：npm 包里其实没有这个主题（见 index.html 顶部说明），
+      // 它的作用是让容器带 cm-s-github 类，从而不启用 cm-s-default 的默认 token 配色。
+      // 编辑器实际配色来自 style.css 的 .content-wrapper .cm-* 规则。
       theme: 'github',
       lineNumbers: true,
       lineWrapping: true,
       tabSize: 2,
+      // styleActiveLine 交给 applySurface() 按模式开关。它会给当前行加
+      // .CodeMirror-activeline（现代模式据此还原光标所在行源码），但基础样式
+      // codemirror.css 里 .CodeMirror-activeline-background{background:#e8f2ff}
+      // 会给当前行刷一层蓝色背景 —— 传统模式必须保持原样，所以只允许现代模式开。
+      styleActiveLine: false,
     });
     cmEditor.getWrapperElement().style.display = 'none';
     cmEditor.refresh();
@@ -61,6 +98,13 @@
     // 监听编辑器内容变化
     cmEditor.on('change', () => {
       currentMarkdownText = cmEditor.getValue();
+      scheduleLivePreviewRefresh();
+    });
+
+    // 现代模式下目录没有渲染后的 DOM 可观察，改为根据光标位置高亮
+    cmEditor.on('cursorActivity', () => {
+      if (currentMode !== 'modern') return;
+      updateActiveTocItemByCursor();
     });
   } catch (e) {
     console.warn('CodeMirror/Mermaid init failed, falling back to textarea:', e);
@@ -151,7 +195,145 @@
     return null;
   }
 
+  // 从 markdown 原文解析标题（现代模式用：那时没有渲染好的 DOM 可查）。
+  // id 生成与 parseHeadingOffsets 完全同构 —— 同一个 generateHeadingId + 独立 Set，
+  // 按出现顺序遍历 —— 因此两边算出的 id 天然对齐。
+  function extractHeadings(text) {
+    const usedIds = new Set();
+    const result = [];
+    let offset = 0;
+    for (const line of text.split('\n')) {
+      const match = line.match(/^(#{1,6})\s+(.*)$/);
+      if (match) {
+        const title = match[2].trim();
+        result.push({
+          level: match[1].length,
+          text: title,
+          offset,
+          id: generateHeadingId(title, usedIds),
+        });
+      }
+      offset += line.length + 1; // +1 for \n
+    }
+    return result;
+  }
+
+  // getValue() 是 O(n)，而光标移动很频繁，这里按文本内容缓存解析结果
+  let headingCache = { text: null, list: [] };
+  function getHeadingsCached(text) {
+    if (headingCache.text !== text) {
+      headingCache = { text, list: extractHeadings(text) };
+    }
+    return headingCache.list;
+  }
+
+  // 按字符偏移定位光标（现代模式与编辑模式的目录跳转共用）
+  function jumpToOffset(offset) {
+    if (cmEditor) {
+      cmEditor.focus();
+      const lineIndex = cmEditor.getValue().slice(0, offset).split('\n').length - 1;
+      cmEditor.setCursor(lineIndex, 0);
+      cmEditor.scrollIntoView({ line: lineIndex, ch: 0 }, 60);
+    } else {
+      editorEl.focus();
+      editorEl.setSelectionRange(offset, offset);
+      scrollEditorToOffset(offset);
+    }
+  }
+
+  // 现代模式的目录：直接来自编辑器里的 markdown 原文，编辑后可实时反映
+  function renderTocFromSource() {
+    const text = cmEditor ? cmEditor.getValue() : editorEl.value;
+    const headings = getHeadingsCached(text);
+    tocEl.innerHTML = '';
+    if (headings.length === 0) {
+      tocEl.innerHTML = '<p class="toc-empty">当前文件没有标题目录</p>';
+      return;
+    }
+    headings.forEach(h => {
+      const item = document.createElement('a');
+      item.className = 'toc-item level-' + h.level;
+      item.textContent = h.text;
+      item.href = '#' + h.id;
+      item.dataset.target = h.id;
+      item.addEventListener('click', e => {
+        e.preventDefault();
+        jumpToOffset(h.offset);
+        updateActiveTocItem(h.id);
+      });
+      tocEl.appendChild(item);
+    });
+  }
+
+  // 现代模式没有可观察的渲染 DOM，改为按光标位置高亮目录项
+  function updateActiveTocItemByCursor() {
+    if (!cmEditor) return;
+    const headings = getHeadingsCached(cmEditor.getValue());
+    if (headings.length === 0) return;
+    const cursorOffset = cmEditor.indexFromPos(cmEditor.getCursor());
+    let currentId = headings[0].id;
+    for (const h of headings) {
+      if (h.offset <= cursorOffset) currentId = h.id;
+      else break;
+    }
+    updateActiveTocItem(currentId);
+  }
+
+  // 现代模式编辑时目录与删除线标注都要跟着更新，防抖避免每个字符都重建
+  let livePreviewTimer = null;
+  function scheduleLivePreviewRefresh() {
+    if (currentMode !== 'modern') return;
+    if (livePreviewTimer) clearTimeout(livePreviewTimer);
+    livePreviewTimer = setTimeout(() => {
+      livePreviewTimer = null;
+      if (currentMode !== 'modern') return;
+      renderToc();
+      refreshStrikeMarks();
+    }, 300);
+  }
+
+  // 只认双波浪线的删除线（与 md-render.js 里 patchStrikethrough 的规则保持一致）。
+  // CM5 自带的删除线已关闭，这里用 markText 自己标注，避免「1~100」被误判。
+  const REAL_STRIKE_RE = /~~(?=[^\s~])([\s\S]*?[^\s~])~~(?=[^~]|$)/g;
+  let strikeMarks = [];
+
+  function clearStrikeMarks() {
+    strikeMarks.forEach(m => m.clear());
+    strikeMarks = [];
+  }
+
+  function refreshStrikeMarks() {
+    clearStrikeMarks();
+    if (currentMode !== 'modern' || !cmEditor) return;
+    const lineCount = cmEditor.lineCount();
+    for (let i = 0; i < lineCount; i++) {
+      const text = cmEditor.getLine(i);
+      if (text.indexOf('~~') === -1) continue;
+      REAL_STRIKE_RE.lastIndex = 0;
+      let m;
+      while ((m = REAL_STRIKE_RE.exec(text)) !== null) {
+        const start = m.index;
+        const end = start + m[0].length;
+        // 内容加删除线；前后两对 ~~ 单独标注以便隐藏（三个区间互不重叠）
+        strikeMarks.push(cmEditor.markText(
+          { line: i, ch: start + 2 }, { line: i, ch: end - 2 },
+          { className: 'cm-md-strike' }));
+        strikeMarks.push(cmEditor.markText(
+          { line: i, ch: start }, { line: i, ch: start + 2 },
+          { className: 'cm-md-strike-mark' }));
+        strikeMarks.push(cmEditor.markText(
+          { line: i, ch: end - 2 }, { line: i, ch: end },
+          { className: 'cm-md-strike-mark' }));
+      }
+    }
+  }
+
   function renderToc() {
+    // 现代模式下 contentEl 是隐藏的且可能已经过期，目录改从编辑器原文实时解析
+    if (currentMode === 'modern') {
+      renderTocFromSource();
+      return;
+    }
     tocEl.innerHTML = '';
     const headings = contentEl.querySelectorAll('h1, h2, h3, h4, h5, h6');
     if (headings.length === 0) {
@@ -259,7 +441,9 @@
     headingOffsets = parseHeadingOffsets(text);
     const html = MdRender.renderMarkdown(text, marked);
     contentEl.innerHTML = html;
-    await resolveImages();
+    // 现代模式下 contentEl 是隐藏的，没必要把图片一张张读进内存；
+    // 切回传统模式时 setMode() 会重新渲染并解析图片
+    if (currentMode !== 'modern') await resolveImages();
     // 编辑模式下保持编辑器/文本区内容与文件内容一致，并尽量保留当前视图位置
     if (isEditMode) {
       if (cmEditor) {
@@ -279,12 +463,15 @@
         editorEl.focus();
       }
     }
+    applySurface();
     renderToc();
     renderMermaid();
   }
 
   function renderMermaid() {
     if (typeof mermaid === 'undefined') return;
+    // 现代模式没有独立的 HTML 渲染表面，图表以源码代码块形式留在编辑器里
+    if (currentMode === 'modern') return;
     const mermaidBlocks = contentEl.querySelectorAll('.language-mermaid');
     if (mermaidBlocks.length === 0) return;
     mermaid.run({ querySelector: '.language-mermaid' }).catch(e => {
@@ -402,14 +589,11 @@
     setStatus('读取文件...');
     try {
       currentFile = name;
-      if (isEditMode) {
-        // 切换文件时自动切回浏览模式
+      // 传统模式切换文件时自动切回浏览模式；现代模式保持常驻编辑态
+      if (isEditMode && currentMode !== 'modern') {
         stopAutosave();
-        if (cmEditor) cmEditor.getWrapperElement().style.display = 'none';
-        contentEl.style.display = '';
-        btnEdit.textContent = '编辑';
-        btnEdit.title = '编辑当前文件';
         isEditMode = false;
+        applySurface();
       }
       await renderFile(entry);
       updateFileSelect();
@@ -565,7 +749,92 @@
     }
   }
 
+  // 三种界面形态（传统-浏览 / 传统-编辑 / 现代）的显隐统一由这里决定，
+  // 不再散落在 toggleEditMode、loadFile、renderFile 各处分别写内联 style。
+  function applySurface() {
+    const isModern = currentMode === 'modern';
+    // 未加载文件时始终显示空状态提示，不要露出一个空编辑器
+    const editorVisible = (isModern || isEditMode) && !!currentFile;
+
+    contentEl.style.display = editorVisible ? 'none' : '';
+
+    if (cmEditor) {
+      const wrapper = cmEditor.getWrapperElement();
+      wrapper.style.display = editorVisible ? '' : 'none';
+      wrapper.classList.toggle('live-preview', isModern);
+      // 现代模式不要行号（贴近 Typora）。用 setOption 让 CodeMirror 自己重算布局，
+      // 比用 CSS 隐藏 gutter 可靠 —— 后者会残留 gutter 占位宽度。
+      cmEditor.setOption('lineNumbers', !isModern);
+      // 当前行高亮只在现代模式开，传统模式保持原样（见构造处的说明）
+      cmEditor.setOption('styleActiveLine', isModern);
+      if (editorVisible) cmEditor.refresh();
+      // 删除线标注只在现代模式需要，离开时清掉避免残留
+      if (isModern) refreshStrikeMarks();
+      else clearStrikeMarks();
+    } else {
+      editorEl.style.display = editorVisible ? '' : 'none';
+    }
+
+    btnEdit.style.display = isModern ? 'none' : '';
+    btnEdit.textContent = isEditMode ? '浏览' : '编辑';
+    btnEdit.title = isEditMode ? '切换回浏览模式并保存' : '编辑当前文件';
+
+    if (btnMode) {
+      btnMode.textContent = isModern ? '传统模式' : '现代模式';
+      btnMode.title = isModern
+        ? '切换到传统模式（编辑 / 浏览 分离）'
+        : '切换到现代模式（Typora 式即时渲染）';
+    }
+  }
+
+  // 传统模式 ↔ 现代模式
+  async function setMode(mode) {
+    const next = mode === 'modern' ? 'modern' : 'traditional';
+    if (next === currentMode) return;
+    if (next === 'modern' && !cmEditor) {
+      setStatus('编辑器未就绪，无法进入现代模式', 'error');
+      return;
+    }
+
+    // 切走之前把编辑器里的最新内容同步回内存，并尽量落盘
+    if (isEditMode && currentFile) {
+      currentMarkdownText = cmEditor ? cmEditor.getValue() : editorEl.value;
+      try {
+        await saveCurrentFile(true);
+      } catch (e) {
+        // 来源不可写（如拖入的单文件）时忽略，不影响模式切换
+      }
+    }
+
+    currentMode = next;
+    saveModePreference(next);
+
+    if (next === 'modern') {
+      // 现代模式 = 常驻编辑态
+      if (currentFile && cmEditor && !isEditMode) {
+        cmEditor.setValue(currentMarkdownText);
+      }
+      isEditMode = true;
+      startAutosave();
+    } else {
+      // 回到传统模式：停在浏览态，重新渲染预览
+      stopAutosave();
+      isEditMode = false;
+      if (currentFile) {
+        contentEl.innerHTML = MdRender.renderMarkdown(currentMarkdownText, marked);
+        await resolveImages();
+      }
+    }
+
+    applySurface();
+    if (currentFile) renderToc();
+    if (next === 'traditional') renderMermaid();
+    if (next === 'modern' && cmEditor) cmEditor.focus();
+  }
+
   async function toggleEditMode() {
+    // 现代模式没有编辑/浏览切换，防御性返回
+    if (currentMode === 'modern') return;
     if (!currentFile) {
       setStatus('请先加载文件', 'error');
       return;
@@ -573,16 +842,18 @@
     if (isEditMode) {
       // 从编辑模式切换到浏览模式：先保存，再停止自动保存
       stopAutosave();
-      await saveCurrentFile();
+      try {
+        await saveCurrentFile();
+      } catch (e) {
+        // 来源不可写（如拖入的单文件没有可写句柄）时保存会失败，
+        // 但不能因此卡在编辑模式 —— 继续切回浏览，错误已由 saveCurrentFile 提示
+      }
       contentEl.innerHTML = MdRender.renderMarkdown(currentMarkdownText, marked);
       await resolveImages();
+      isEditMode = false;
+      applySurface();
       renderToc();
       renderMermaid();
-      if (cmEditor) cmEditor.getWrapperElement().style.display = 'none';
-      contentEl.style.display = '';
-      btnEdit.textContent = '编辑';
-      btnEdit.title = '编辑当前文件';
-      isEditMode = false;
       // 恢复之前记录的滚动位置
       if (lastViewHeadingId) {
         const target = document.getElementById(lastViewHeadingId);
@@ -596,15 +867,11 @@
       const topHeadingId = getTopVisibleHeadingId();
       lastViewHeadingId = topHeadingId;
 
-      if (cmEditor) {
-        cmEditor.setValue(currentMarkdownText);
-        cmEditor.getWrapperElement().style.display = '';
-        cmEditor.refresh();
-      }
-      contentEl.style.display = 'none';
-      btnEdit.textContent = '浏览';
-      btnEdit.title = '切换回浏览模式并保存';
+      if (cmEditor) cmEditor.setValue(currentMarkdownText);
+      else editorEl.value = currentMarkdownText;
+
       isEditMode = true;
+      applySurface();
       startAutosave();
 
       if (cmEditor) {
@@ -619,8 +886,6 @@
         }
         cmEditor.focus();
       } else {
-        editorEl.value = currentMarkdownText;
-        editorEl.style.display = '';
         if (topHeadingId && headingOffsets[topHeadingId] !== undefined) {
           const offset = headingOffsets[topHeadingId];
           editorEl.setSelectionRange(offset, offset);
@@ -635,6 +900,12 @@
   }
 
   btnEdit.addEventListener('click', toggleEditMode);
+
+  if (btnMode) {
+    btnMode.addEventListener('click', () => {
+      setMode(currentMode === 'modern' ? 'traditional' : 'modern');
+    });
+  }
 
   btnToggleToc.addEventListener('click', () => {
     const isCollapsed = sidebar.classList.toggle('collapsed');
@@ -913,6 +1184,8 @@
   let observer = null;
   function setupTocObserver() {
     if (observer) observer.disconnect();
+    // 现代模式没有可见的 contentEl 标题，改由光标位置驱动目录高亮
+    if (currentMode === 'modern') return;
     const headings = contentEl.querySelectorAll('h1, h2, h3, h4, h5, h6');
     if (headings.length === 0) return;
     observer = new IntersectionObserver((entries) => {
@@ -931,6 +1204,18 @@
     originalRenderToc();
     setupTocObserver();
   };
+
+  // 启动时应用持久化的模式：现代模式等价于常驻编辑态
+  if (currentMode === 'modern') {
+    if (cmEditor) {
+      isEditMode = true;
+      startAutosave();
+    } else {
+      // CodeMirror 未初始化成功时现代模式无法实现，退回传统模式
+      currentMode = 'traditional';
+    }
+  }
+  applySurface();
 
   updateFileSelect();
   idbPurgeExpired();

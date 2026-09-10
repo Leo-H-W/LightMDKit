@@ -131,9 +131,42 @@
     return out.join('\n');
   }
 
+  // marked 12 的删除线规则允许单个 ~ 作为定界符：
+  //   del: /^(~~?)(?=[^\s~])([\s\S]*?[^\s~])\1(?=[^~]|$)/
+  // 于是中文文档里常见的范围写法（"1~100、2~5"）里两个不相干的 ~ 会被配对，
+  // 中间的内容被渲染成删除线。这里覆盖 del 分词器，只认双波浪线 ~~。
+  // marked 对自定义分词器的约定：返回 false 才回退到内置实现，返回 undefined
+  // 表示“不匹配”，借此屏蔽掉内置的单波浪线删除线。
+  const DOUBLE_TILDE_DEL = /^~~(?=[^\s~])([\s\S]*?[^\s~])~~(?=[^~]|$)/;
+  const patchedMarked = new WeakSet();
+
+  function patchStrikethrough(marked) {
+    if (!marked || typeof marked.use !== 'function' || patchedMarked.has(marked)) {
+      return marked;
+    }
+    patchedMarked.add(marked);
+    marked.use({
+      tokenizer: {
+        del(src) {
+          const cap = DOUBLE_TILDE_DEL.exec(src);
+          if (cap) {
+            return {
+              type: 'del',
+              raw: cap[0],
+              text: cap[1],
+              tokens: this.lexer.inlineTokens(cap[1]),
+            };
+          }
+        },
+      },
+    });
+    return marked;
+  }
+
   function renderMarkdown(markdown, marked) {
+    patchStrikethrough(marked);
     return marked.parse(preserveIndent(mergeTableCells(markdown)), { gfm: true, breaks: true });
   }
 
-  return { preserveIndent, mergeTableCells, renderMarkdown };
+  return { preserveIndent, mergeTableCells, patchStrikethrough, renderMarkdown };
 }));

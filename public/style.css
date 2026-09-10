@@ -408,3 +408,165 @@ html {
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
+
+/* ============================================================
+   现代模式：Typora 式实时预览
+
+   全部规则挂在 .live-preview 作用域下 —— 该类由 app.js 的 applySurface()
+   加到 CodeMirror 根节点上，因此传统模式的编辑 / 浏览外观完全不受影响。
+
+   原理：CM5 markdown mode 打开 highlightFormatting 后，会给语法标记打上
+   cm-formatting* 类。这里默认把标记隐藏，光标所在行
+   （.CodeMirror-activeline）再还原成源码，即 Typora 的
+   「光标进入某块则该块退化为源码，移开后折叠回成品样式」。
+   ============================================================ */
+
+/*
+ * 兜底：传统模式的编辑界面必须与改动前完全一致。
+ * 基础 codemirror.css 会给 .CodeMirror-activeline-background 刷一层蓝底，
+ * 万一 styleActiveLine 没能被正确关掉，这里也把它压回透明。
+ */
+.content-wrapper .CodeMirror:not(.live-preview) .CodeMirror-activeline-background {
+  background: transparent;
+}
+
+/* 正文改用渲染视图的无衬线字体，贴近成品 / Typora 观感 */
+.live-preview.CodeMirror {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+    Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+/*
+ * 语法标记：默认隐藏。
+ * 不能用 display:none —— 那会让 CodeMirror 算错光标位置与换行。
+ * 这里用「缩到 1px + 负字距抵消宽度 + 透明」保留占位，光标定位照常。
+ * （行高不会因此塌陷：每个 .CodeMirror-line 的 strut 由上面的 line-height 决定）
+ *
+ * 中间那层 .CodeMirror-line 是为了提权：标记元素除了 cm-formatting* 之外，
+ * 还会同时带上所在块的正文类（如 # 标记会带 cm-header cm-header-1），
+ * 而下面 .cm-header-1 的 font-size 与隐藏规则同权重。不加这一层的话，
+ * 后写的 .cm-header-1 会把隐藏规则盖掉，# 就藏不住了。
+ */
+.live-preview .CodeMirror-line .cm-formatting {
+  font-size: 1px;
+  letter-spacing: -1ch;
+  color: transparent;
+}
+
+/* 例外：这几个标记保留可见，隐藏掉反而更难读 */
+.live-preview .CodeMirror-line .cm-formatting-list,       /* - / * / 1. 列表符号 */
+.live-preview .CodeMirror-line .cm-formatting-list-ul,
+.live-preview .CodeMirror-line .cm-formatting-list-ol,
+.live-preview .CodeMirror-line .cm-formatting-task,       /* [ ] 任务框 */
+.live-preview .CodeMirror-line .cm-formatting-code-block, /* ``` 代码块围栏 */
+.live-preview .CodeMirror-line .cm-formatting-escape {    /* 反斜杠转义 */
+  font-size: inherit;
+  letter-spacing: normal;
+  color: #59636e;
+}
+
+/* 光标所在行：还原源码，方便编辑标记 */
+.live-preview .CodeMirror-activeline .cm-formatting {
+  font-size: inherit;
+  letter-spacing: normal;
+  color: #8c959f;
+}
+
+/* 当前行淡背景，帮助定位 */
+.live-preview .CodeMirror-activeline-background {
+  background: rgba(9, 105, 218, 0.04);
+  border-radius: 4px;
+}
+
+/* ---------- 标题 ---------- */
+.live-preview .cm-header {
+  color: #1f2328;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.live-preview .cm-header-1 { font-size: 2em; }
+.live-preview .cm-header-2 { font-size: 1.5em; }
+.live-preview .cm-header-3 { font-size: 1.25em; }
+.live-preview .cm-header-4 { font-size: 1em; }
+.live-preview .cm-header-5 { font-size: 0.875em; }
+.live-preview .cm-header-6 { font-size: 0.85em; color: #59636e; }
+
+/* ---------- 行内样式 ---------- */
+.live-preview .cm-strong { font-weight: 700; }
+.live-preview .cm-em { font-style: italic; }
+
+/*
+ * 删除线。CM5 自带的删除线已关闭 —— 它把单个 ~ 也当定界符，会把「1~100、2~5」
+ * 这类范围误判成删除线，还会把范围里的两个 ~ 当成标记隐藏掉，直接显示成「1100、25」。
+ * 真正的 ~~...~~ 由 app.js 的 refreshStrikeMarks() 用 markText 标注成下面两个类。
+ */
+.live-preview .CodeMirror-line .cm-md-strike {
+  text-decoration: line-through;
+  color: #59636e;
+}
+.live-preview .CodeMirror-line .cm-md-strike-mark {
+  font-size: 1px;
+  letter-spacing: -1ch;
+  color: transparent;
+}
+/* 光标所在行：还原源码 */
+.live-preview .CodeMirror-activeline .cm-md-strike {
+  text-decoration: none;
+  color: inherit;
+}
+.live-preview .CodeMirror-activeline .cm-md-strike-mark {
+  font-size: inherit;
+  letter-spacing: normal;
+  color: #8c959f;
+}
+
+/* 行内代码：等宽 + 浅底（代码块内容走的也是 cm-comment） */
+.live-preview .cm-comment {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+  font-size: 0.875em;
+  color: #1f2328;
+  background: rgba(129, 139, 152, 0.12);
+  border-radius: 4px;
+}
+
+/* ---------- 链接 ---------- */
+.live-preview .cm-link { color: #0969da; }
+
+/* 链接地址在非当前行隐藏，只留可见的链接文字（贴近成品观感） */
+.live-preview .CodeMirror-line .cm-string {
+  font-size: 1px;
+  letter-spacing: -1ch;
+  color: transparent;
+}
+.live-preview .CodeMirror-activeline .cm-string {
+  font-size: inherit;
+  letter-spacing: normal;
+  color: #59636e;
+}
+
+/* ---------- 引用 ---------- */
+.live-preview .cm-quote {
+  color: #59636e;
+  font-style: italic;
+}
+
+/* ---------- 图片：第一版保留源码形态，仅做柔化 ---------- */
+.live-preview .cm-image,
+.live-preview .cm-image-alt-text,
+.live-preview .cm-image-marker {
+  color: #8250df;
+}
+
+/* ---------- 列表内容 ---------- */
+.live-preview .cm-variable-2,
+.live-preview .cm-variable-3,
+.live-preview .cm-keyword {
+  color: #1f2328;
+}
+
+/* ---------- 分隔线 ---------- */
+.live-preview .cm-hr {
+  color: #d1d9e0;
+}
