@@ -426,7 +426,16 @@
       return;
     }
     if (!currentFolderHandle) {
-      setStatus('请先加载文件夹', 'error');
+      // 拖入单个文件等场景没有目录句柄：跳过目录扫描，仅重新读取当前文件内容
+      setStatus('刷新中...');
+      try {
+        const entry = currentFiles.find(f => f.name === currentFile);
+        if (entry) await renderFile(entry);
+        setStatus('已刷新', 'success');
+      } catch (e) {
+        console.error(e);
+        setStatus(e.message, 'error');
+      }
       return;
     }
     setStatus('刷新中...');
