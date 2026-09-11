@@ -67,6 +67,30 @@
     return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
   }
 
+  // GFM 要求表格的「分隔行」与「表头行」单元格数一致，不一致时整张表不被识别成
+  // 表格 —— marked 会把这几行原样当文字输出，看起来就是"原始语法"。
+  // 作者多写或少写一组都会踩到，例如 3 列的表头配 `|---|---|`（少一组）。
+  // 这里把分隔行统一成与表头同宽：少的补一组普通左对齐，多的截掉。
+  // 判据取表头而不是取数据行 —— 表头才是这张表的列定义。
+  function normalizeTableDelimiters(markdown) {
+    const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
+    for (let i = 0; i + 1 < lines.length; i++) {
+      const head = lines[i].trim();
+      const next = lines[i + 1].trim();
+      if (!head.startsWith('|') || !next.startsWith('|')) continue;
+
+      const headCells = splitTableCells(lines[i]);
+      const delimCells = splitTableCells(lines[i + 1]);
+      if (!isDelimiterRow(delimCells)) continue;
+      if (headCells.length === delimCells.length) continue;   // 本来就一致
+
+      const filled = headCells.map((_, idx) =>
+        delimCells[idx] !== undefined ? delimCells[idx] : '---');
+      lines[i + 1] = '| ' + filled.join(' | ') + ' |';
+    }
+    return lines.join('\n');
+  }
+
   // GFM 表格不支持多行单元格：当某个单元格内容换行时，marked 会把后续行
   // 解析成独立的新行。这里把跨行的单元格内容合并回同一行，用 <br> 表示换行。
   function mergeTableCells(markdown) {
@@ -165,8 +189,12 @@
 
   function renderMarkdown(markdown, marked) {
     patchStrikethrough(marked);
-    return marked.parse(preserveIndent(mergeTableCells(markdown)), { gfm: true, breaks: true });
+    // 顺序：先补齐分隔行（否则 marked 根本不认这是表格），再合并跨行单元格，
+    // 最后处理缩进保真 —— 后两步都要求表格结构已经合法。
+    return marked.parse(
+      preserveIndent(mergeTableCells(normalizeTableDelimiters(markdown))),
+      { gfm: true, breaks: true });
   }
 
-  return { preserveIndent, mergeTableCells, patchStrikethrough, renderMarkdown };
+  return { preserveIndent, normalizeTableDelimiters, mergeTableCells, patchStrikethrough, renderMarkdown };
 }));

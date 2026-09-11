@@ -149,6 +149,7 @@
     cmEditor.on('cursorActivity', () => {
       if (currentMode !== 'modern') return;
       updateActiveTocItemByCursor();
+      updateSepReveal();   // 光标进入表头行时分隔行要展开
     });
   } catch (e) {
     console.warn('CodeMirror/Mermaid init failed, falling back to textarea:', e);
@@ -500,8 +501,32 @@
   function dropTableBlock(b) {
     for (const m of b.marks) m.clear();
     b.marks = [];
-    if (b.sepHandle && cmEditor) cmEditor.removeLineClass(b.sepHandle, 'text', 'cm-tbl-sep-line');
+    if (b.sepHandle && cmEditor) {
+      cmEditor.removeLineClass(b.sepHandle, 'text', 'cm-tbl-sep-line');
+      cmEditor.removeLineClass(b.sepHandle, 'text', 'cm-tbl-sep-open');
+    }
     b.sepHandle = null;
+    b.sepOpen = false;
+  }
+
+  // 光标落在某张表的表头行（或分隔行本身）时，把该表的分隔行展开显示。
+  // 分隔行是列数的定义处，也是「表格不渲染」的头号原因 —— 多写少写一组都会让
+  // GFM 拒绝识别整张表，而平时它被压成 0 高看不见，根本没法核对。
+  // 展开后能直接对着它改，不用去传统模式翻源码。
+  function updateSepReveal() {
+    if (currentMode !== 'modern' || !cmEditor) return;
+    const cur = cmEditor.getCursor().line;
+    for (const b of tableBlocks) {
+      if (!b.sepHandle) continue;
+      // 行号会随编辑漂移，用行句柄反查当前行号
+      const sepLine = cmEditor.getLineNumber(b.sepHandle);
+      if (sepLine === null || sepLine < 0) continue;
+      const open = (cur === sepLine - 1 || cur === sepLine);
+      if (open === !!b.sepOpen) continue;
+      b.sepOpen = open;
+      if (open) cmEditor.addLineClass(b.sepHandle, 'text', 'cm-tbl-sep-open');
+      else cmEditor.removeLineClass(b.sepHandle, 'text', 'cm-tbl-sep-open');
+    }
   }
 
   function clearTableMarks() {
@@ -665,6 +690,8 @@
         }
       }
     }
+
+    updateSepReveal();   // 重建后按当前光标位置决定分隔行是否展开
   }
 
   // 表格里按 Tab 新增一行，对齐 Typora 的习惯：在表格末尾追加一行空单元格，

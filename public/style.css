@@ -763,10 +763,20 @@ html {
   color: transparent;
 }
 
-.live-preview .CodeMirror-line.cm-tbl-sep-line {
+/* 默认把分隔行压成 0 高藏起来，让表头与数据行直接相接。
+   但光标落在这一张表的表头行或分隔行上时展开（加 .cm-tbl-sep-open）：
+   分隔行是列数的定义处，也是「表格不渲染」的头号原因（多写/少写一组都会让
+   GFM 拒绝识别整张表），平时看不见就没法核对。 */
+.live-preview .CodeMirror-line.cm-tbl-sep-line:not(.cm-tbl-sep-open) {
   height: 0 !important;
   line-height: 0 !important;
   overflow: hidden;
+}
+
+.live-preview .CodeMirror-line.cm-tbl-sep-open .cm-tbl-sep {
+  font-size: inherit;
+  letter-spacing: normal;
+  color: #59636e;
 }
 
 /*
