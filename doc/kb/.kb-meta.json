@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-09-11T07:10:00Z",
-  "git_commit": "f71e683",
-  "git_commit_full": "f71e6839f9f2287bb2e797261a39b8126af79368",
-  "git_branch": "feat/sidebar-file-browser",
+  "generated_at": "2026-09-11T10:30:00Z",
+  "git_commit": "8edbf60",
+  "git_commit_full": "8edbf60f3a37d80e4d202ba4705ef49bc44524a8",
+  "git_branch": "main",
   "generator_version": "1.0.0",
   "repository_info": {
     "name": "lightmdkit",
@@ -15,14 +15,26 @@
     "is_library": false,
     "has_api": true,
     "is_git_repo": true,
-    "total_commits": 15,
+    "total_commits": 26,
     "entry_point": "server.js",
     "default_port": 3456,
     "has_tests": false,
     "has_build_step": true,
     "build_command": "npm run build:win",
     "build_artifact": "dist/lightmdkit.exe",
-    "platforms": ["win32", "linux", "darwin"]
+    "platforms": ["win32", "linux", "darwin"],
+    "source_sizes": {
+      "public/app.js": 2154,
+      "public/md-render.js": 200,
+      "public/style.css": 1002,
+      "public/index.html": 115,
+      "server.js": 313
+    },
+    "asset_versions": {
+      "public/style.css": 25,
+      "public/md-render.js": 5,
+      "public/app.js": 33
+    }
   },
   "repository_dependencies": ["express", "marked"],
   "dev_dependencies": ["pkg"],
@@ -33,16 +45,28 @@
     "marked@12"
   ],
   "git_info": {
-    "head_commit": "f71e6839f9f2287bb2e797261a39b8126af79368",
-    "head_short": "f71e683",
-    "branch": "feat/sidebar-file-browser",
-    "main_branch_head": "3bbca34",
-    "commit_count": 15,
+    "head_commit": "8edbf60f3a37d80e4d202ba4705ef49bc44524a8",
+    "head_short": "8edbf60",
+    "branch": "main",
+    "main_branch_head": "8edbf60",
+    "commit_count": 26,
     "first_commit_date": "2026-08-15",
     "last_commit_date": "2026-09-11",
     "working_tree_clean": true,
-    "baseline_note": "kb 文档描述的是 2026-09-11 的工作区代码，其代码内容对应提交 f71e683（分支 feat/sidebar-file-browser，在 main 的 3bbca34 之上）。行号请直接对工作区文件核对，不要用 git show 3bbca34:... （该版本不含侧边栏文件浏览器等功能，行号对不上）。",
-    "uncommitted_note": "无未提交内容。代码改动见 f71e683，本知识库文档本身见其后的 docs: 提交。"
+    "baseline_note": "kb 文档描述的就是 HEAD(8edbf60) 的工作区代码，工作区无未提交的代码改动（仅 doc/kb/ 下有文档改动）。核对行号请直接读工作区文件，不要用 3bbca34 及更早的提交 —— 那些版本不含侧边栏文件浏览器、现代模式表格渲染、新建文件等能力。",
+    "uncommitted_note": "无未提交的代码改动。本知识库文档自身的改动为本次更新。",
+    "recent_commits": [
+      "8edbf60 docs: feature-todo 第 2 项（新增文件）标记完成",
+      "bf3f988 feat: 新增「新文件」按钮，可在当前文件夹新建 Markdown 文件",
+      "69f1dc0 fix: 表格行里鼠标点击的落点（行与列都不准）",
+      "534298b feat: 表格单元格支持 Enter 换格、Ctrl+Enter 换行",
+      "468a2c3 提示：目录名悬停时说明完整路径受浏览器安全限制无法获取",
+      "1dd2be0 fix: 空表格行被误判为分隔行，导致 Tab 新增行显示成原始文本",
+      "cbfcd4f fix: 分隔行与表头不等宽时表格不渲染；光标落在表头时展开分隔行",
+      "56a78b4 fix: 刷新后表格渲染消失；Tab 新增行列数按分隔行算少",
+      "1f803ec fix: 两张表紧邻时，Tab 新增行的列数按上一张表算错",
+      "dc57969 feat: 现代模式补全所见即所得能力，并修正刷新与按钮位置"
+    ]
   },
   "kb_documents": [
     "仓库概览.md",

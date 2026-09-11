@@ -1,8 +1,8 @@
 # API 索引
 
-> **文档信息**：LightMDKit · 分支 `feat/sidebar-file-browser` · 提交 `f71e683` · 生成日期 2026-09-11
+> **文档信息**：LightMDKit · 分支 `main` · 提交 `8edbf60` · 生成日期 2026-09-11（2026-09-11 核对）
 
-> **重要说明**：当前前端（`LightMDKit/public/app.js`）使用浏览器原生 **File System Access API**（`showDirectoryPicker` / `createWritable`，见 `LightMDKit/public/app.js:760-927`）直接读写本地文件，**不调用**本文列出的任何 `/api/*` 接口。前端代码中不存在 `fetch` / `XMLHttpRequest` / `axios` 调用。后端接口属于**服务端提供的替代通道**，供外部脚本、命令行工具或第三方程序调用（详见 `doc/kb/外部接入指南.md`）。
+> **重要说明**：当前前端（`LightMDKit/public/app.js`）使用浏览器原生 **File System Access API**（`showDirectoryPicker` / `createWritable`，见 `LightMDKit/public/app.js:1248-1564`）直接读写本地文件，**不调用**本文列出的任何 `/api/*` 接口。前端代码中不存在 `fetch` / `XMLHttpRequest` / `axios` 调用。后端接口属于**服务端提供的替代通道**，供外部脚本、命令行工具或第三方程序调用（详见 `doc/kb/外部接入指南.md`）。
 
 ## 概览
 
@@ -213,7 +213,7 @@
 
 三个返回 HTML 的接口都调用 `renderMarkdown(content, marked)`：
 - 调用点：`LightMDKit/server.js:154`、`LightMDKit/server.js:191`、`LightMDKit/server.js:219`
-- 实现：`LightMDKit/public/md-render.js:166`（`marked` 在此处被复用/包装），模块引入见 `LightMDKit/server.js:6-7`
+- 实现：`LightMDKit/public/md-render.js:190`（`marked` 在此处被复用/包装），模块引入见 `LightMDKit/server.js:6-7`
 
 ### 服务进程模型（与调试相关）
 
