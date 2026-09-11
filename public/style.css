@@ -152,7 +152,6 @@ html, body {
   display: none;
 }
 
-.sidebar.collapsed .sidebar-load,
 .sidebar.collapsed .sidebar-view-switch,
 .sidebar.collapsed .sidebar-panel {
   opacity: 0;
@@ -201,17 +200,13 @@ html, body {
   color: #1f2328;
 }
 
-/* 加载文件夹：整个侧边栏的主操作，单独占一行放在「导航」标题之上。
-   通栏宽度，不挤占标题行，下面留给文件列表 */
-.sidebar-load {
-  padding: 8px;
-  flex-shrink: 0;
-}
-
+/* 加载文件夹：全 app 的主操作，放在顶栏左侧、紧跟文件夹名。
+   尺寸刻意对齐 .btn（padding 6px 14px / 13px / line-height 20px）——
+   这样它与右侧的「刷新」「编辑」等按钮在同一行、同一高度、同一大小，
+   而不是靠 align-items 居中「看起来差不多」。蓝色文字把它和普通按钮区分开。 */
 .btn-load-folder {
-  display: block;
-  width: 100%;
-  padding: 6px 8px;
+  flex-shrink: 0;
+  padding: 6px 14px;
   font-size: 13px;
   line-height: 20px;
   font-family: inherit;
@@ -648,19 +643,142 @@ html {
   font-size: 1px;
   letter-spacing: -1ch;
   color: transparent;
+  /* 代码围栏的标记同时带 cm-comment，后者有底色。不关掉的话会留下一条
+     1px 高的灰线 —— 标记既然要藏，底色也不能露。 */
+  background: none;
 }
 
 /* 例外：这几个标记保留可见，隐藏掉反而更难读 */
-.live-preview .CodeMirror-line .cm-formatting-list,       /* - / * / 1. 列表符号 */
-.live-preview .CodeMirror-line .cm-formatting-list-ul,
-.live-preview .CodeMirror-line .cm-formatting-list-ol,
+.live-preview .CodeMirror-line .cm-formatting-list-ol,    /* 有序列表序号 `1.` */
 .live-preview .CodeMirror-line .cm-formatting-task,       /* [ ] 任务框 */
-.live-preview .CodeMirror-line .cm-formatting-code-block, /* ``` 代码块围栏 */
 .live-preview .CodeMirror-line .cm-formatting-escape {    /* 反斜杠转义 */
   font-size: inherit;
   letter-spacing: normal;
   color: #59636e;
 }
+
+/*
+ * 无序列表：把 `-` / `*` / `+` 换成果点，贴近成品观感。
+ * 标记本身仍被上面的通用规则缩成 1px 透明 —— 不能直接 display:none，
+ * 否则 CodeMirror 会算错光标位置和换行；这里保留占位，再用 ::before
+ * 把圆点画出来（CM5 无法替换文本，这是最省的做法）。
+ * 有序列表不套用此规则：`1.` / `2.` 直接显示比造一个替代符号更接近成品。
+ * 圆点用 em 定尺寸，随正文字号缩放。
+ */
+.live-preview .CodeMirror-line .cm-formatting-list-ul::before {
+  content: '•';
+  /* 必须写死 px：该元素自身的 font-size 已被上面的隐藏规则压成 1px，
+     用 em 会以 1px 为基准算成 1px，圆点等于没画。16px 与 .live-preview.CodeMirror
+     的正文字号一致。 */
+  font-size: 16px;
+  letter-spacing: normal;
+  color: #1f2328;
+}
+
+/* 光标所在行还原成源码：撤掉圆点，露出原来的 `-` 以便修改 */
+.live-preview .CodeMirror-activeline .cm-formatting-list-ul::before {
+  content: none;
+}
+
+/*
+ * 任务框：`- [x]` / `- [ ]` 里的方括号换成勾选框。
+ * 类名由 app.js 的 refreshTaskMarks() 用 markText 打上（CM5 自带 taskLists 区分不出
+ * 勾没勾，只存内部 state）。方括号同样用「缩到 1px + 负字距 + 透明」保留占位。
+ */
+.live-preview .CodeMirror-line .cm-task-box {
+  font-size: 1px;
+  letter-spacing: -1ch;
+  color: transparent;
+}
+
+.live-preview .CodeMirror-line .cm-task-box::before {
+  font-size: 16px;          /* 不能用 em：自身字号已被压成 1px */
+  letter-spacing: normal;
+  color: #0969da;
+}
+
+.live-preview .CodeMirror-line .cm-task-open::before { content: '\2610'; }  /* ☐ */
+.live-preview .CodeMirror-line .cm-task-done::before { content: '\2611'; }  /* ☑ */
+
+/* 任务行已有勾选框，不要再叠一个圆点（:has 需 Chrome/Edge 105+） */
+.live-preview .CodeMirror-line:has(.cm-task-box) .cm-formatting-list-ul::before {
+  content: none;
+}
+
+/* 光标所在行还原成源码：撤掉勾选框，露出 `[x]` 以便修改 */
+.live-preview .CodeMirror-activeline .cm-task-box {
+  font-size: inherit;
+  letter-spacing: normal;
+  color: #59636e;
+}
+.live-preview .CodeMirror-activeline .cm-task-box::before {
+  content: none;
+}
+
+/* ============================================================
+   表格伪渲染（标记由 app.js 的 refreshTableMarks() 打上）
+
+   CM5 的 markdown mode 不认表格，所以单元格与管道符都没有原生类名，
+   这里全靠 markText 标注 + CSS 拼装。列宽由 JS 算好后注入 #cm-table-style。
+   ============================================================ */
+
+/* 管道符：与其它标记一样「缩到 1px + 负字距 + 透明」保留占位 */
+.live-preview .CodeMirror-line .cm-tbl-pipe {
+  font-size: 1px;
+  letter-spacing: -1ch;
+  color: transparent;
+}
+
+/* 单元格：inline-block 才能吃宽高与边框。
+   相邻两格各画一条 1px 边会叠成 2px，用负外边距压回 1px（等价 border-collapse）。 */
+.live-preview .CodeMirror-line .cm-tbl-cell {
+  display: inline-block;
+  padding: 4px 8px;
+  border: 1px solid #d1d9e0;
+  background: #ffffff;
+  box-sizing: border-box;
+  vertical-align: top;
+  /* 宽度由 JS 按列算好后注入，这里禁止折行兜底：
+     宁可略微溢出，也不要某一格变成两行、把整行撑高 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-preview .CodeMirror-line .cm-tbl-cell:not(.cm-tbl-c0) {
+  margin-left: -1px;
+}
+
+/* 表头行 */
+.live-preview .CodeMirror-line .cm-tbl-head {
+  font-weight: 700;
+  background: #f6f8fa;
+}
+
+/* 分隔行：源码本身压扁，行也用行类名收成 0 高，
+   这样表头与第一行数据直接相接，中间不留空行。 */
+.live-preview .CodeMirror-line .cm-tbl-sep {
+  font-size: 1px;
+  letter-spacing: -1ch;
+  color: transparent;
+}
+
+.live-preview .CodeMirror-line.cm-tbl-sep-line {
+  height: 0 !important;
+  line-height: 0 !important;
+  overflow: hidden;
+}
+
+/*
+ * 表格不做「光标行还原源码」。
+ *
+ * 其它标记（#、**、~~）在光标所在行会露出来方便修改，但表格不行：
+ * 光标一进表格就把格子拆成源码的话，那一行的列宽会塌成内容宽度，
+ * 与上下行对不齐 —— 实测 Tab 新增一行后，新行格子宽 13px 而其余行是 70/86px，
+ * 看起来就像「少了一列」。Typora 也是光标在表格里时整张表依然是表格。
+ *
+ * 代价：编辑表格时看不到管道符。要增删列请切到传统模式的编辑视图。
+ */
 
 /* 光标所在行：还原源码，方便编辑标记 */
 .live-preview .CodeMirror-activeline .cm-formatting {

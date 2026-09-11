@@ -16,12 +16,13 @@
     基础主题那批 .cm-s-default .cm-* 颜色就会生效，反而改变现有观感。
   -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5/lib/codemirror.min.css">
-  <link rel="stylesheet" href="style.css?v=19">
+  <link rel="stylesheet" href="style.css?v=23">
 </head>
 <body>
   <div class="app">
     <header class="toolbar">
       <div class="toolbar-left">
+        <button id="btn-load-folder" class="btn-load-folder" title="选择包含 Markdown 文件的目录">&#128193; 加载文件夹...</button>
         <span id="folder-label" class="folder-label"></span>
       </div>
       <div class="toolbar-right">
@@ -37,9 +38,6 @@
     <div class="main">
       <aside class="sidebar">
         <div class="resize-handle" title="拖动调整宽度"></div>
-        <div class="sidebar-load">
-          <button id="btn-load-folder" class="btn-load-folder" title="选择包含 Markdown 文件的目录">&#128193; 加载文件夹...</button>
-        </div>
         <div class="sidebar-header">
           <span class="sidebar-title">导航</span>
           <button id="btn-toggle-toc" class="btn-toggle" title="隐藏侧边栏">&#9664;</button>
@@ -89,11 +87,13 @@
   <script src="https://cdn.jsdelivr.net/npm/codemirror@5/lib/codemirror.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/codemirror@5/addon/mode/overlay.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/codemirror@5/addon/selection/active-line.min.js"></script>
+  <!-- 列表自动续行：回车后保留 - / * / 1. / 任务框 的前缀（现代模式绑定 Enter） -->
+  <script src="https://cdn.jsdelivr.net/npm/codemirror@5/addon/edit/continuelist.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/codemirror@5/mode/markdown/markdown.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/codemirror@5/mode/gfm/gfm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
   <script src="md-render.js?v=4"></script>
-  <script src="app.js?v=21"></script>
+  <script src="app.js?v=24"></script>
 </body>
 </html>

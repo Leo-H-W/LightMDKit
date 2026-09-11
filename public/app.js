@@ -120,6 +120,7 @@
       lineNumbers: true,
       lineWrapping: true,
       tabSize: 2,
+      // extraKeys 由 applySurface() 按模式动态设置（见 MODERN_EXTRA_KEYS）
       // styleActiveLine 交给 applySurface() 按模式开关。它会给当前行加
       // .CodeMirror-activeline（现代模式据此还原光标所在行源码），但基础样式
       // codemirror.css 里 .CodeMirror-activeline-background{background:#e8f2ff}
@@ -408,6 +409,8 @@
       if (currentMode !== 'modern') return;
       renderToc();
       refreshStrikeMarks();
+      refreshTaskMarks();
+      refreshTableMarks();
     }, 300);
   }
 
@@ -445,6 +448,242 @@
           { className: 'cm-md-strike-mark' }));
       }
     }
+  }
+
+  // 任务框：把 `- [x]` / `- [ ]` 里的方括号标注出来，由 CSS 换成 ☑ / ☐。
+  // 不用 CodeMirror 自带的 taskLists：它默认关闭（mode 配置里没开就是 false），
+  // 而且开了之后勾没勾只存在内部 state 里、不落到 class 上，CSS 区分不出来。
+  // 所以这里自己扫行标注，正则只认「行首列表符号 + 紧跟的 [x]/[ ]」，
+  // 与渲染端 marked 的判定口径一致。
+  const TASK_RE = /^(\s*[-*+]\s+)\[([ xX])\]/;
+  let taskMarks = [];
+
+  function clearTaskMarks() {
+    taskMarks.forEach(m => m.clear());
+    taskMarks = [];
+  }
+
+  function refreshTaskMarks() {
+    clearTaskMarks();
+    if (currentMode !== 'modern' || !cmEditor) return;
+    const lineCount = cmEditor.lineCount();
+    for (let i = 0; i < lineCount; i++) {
+      const text = cmEditor.getLine(i);
+      if (text.indexOf('[') === -1) continue;
+      const m = TASK_RE.exec(text);
+      if (!m) continue;
+      const start = m[1].length;   // '[' 的位置，跳过缩进与列表符号
+      taskMarks.push(cmEditor.markText(
+        { line: i, ch: start }, { line: i, ch: start + 3 },
+        { className: m[2] === ' ' ? 'cm-task-box cm-task-open' : 'cm-task-box cm-task-done' }));
+    }
+  }
+
+  // ---------------- 表格伪渲染 ----------------
+  // CM5 的 markdown mode 完全不认表格（mode 源码里搜不到 table），管道符与单元格
+  // 都没有类名可用，CSS 无从下手。这里自己扫块：识别「表头 + 分隔行 + 数据行」，
+  // 把每格的字符区间与管道符分别用 markText 打上类名，由 CSS 画格子、藏管道符。
+  //
+  // 列宽必须自己算：内联 span 不会跨行对齐，只有让同一列的所有格子取相同宽度，
+  // 各行才能对齐。宽度按「最长内容 + 内边距」估算后注入一张动态样式表。
+  // 全角字符约占两倍宽度，按此折算。
+  const TABLE_ROW_RE = /^\s*\|.*\|\s*$/;
+  const TABLE_SEP_RE = /^\s*\|[\s:|-]+\|\s*$/;
+  const TABLE_COL_CLASS_PREFIX = 'cm-tbl-c';
+  // 每个表格块一份记录，便于「只重建变化的那张表」而不是全文推倒重来。
+  // { sig, marks: [], sepHandle }
+  //   sig       —— 该块的内容签名（只含文本，不含行号：插入/删除行会让行号漂移，
+  //                带上行号会导致没改过的表也被判定为变化）
+  //   sepHandle —— 分隔行的行句柄。用句柄而不是行号，编辑后仍然指向正确的行。
+  let tableBlocks = [];
+
+  function dropTableBlock(b) {
+    for (const m of b.marks) m.clear();
+    b.marks = [];
+    if (b.sepHandle && cmEditor) cmEditor.removeLineClass(b.sepHandle, 'text', 'cm-tbl-sep-line');
+    b.sepHandle = null;
+  }
+
+  function clearTableMarks() {
+    for (const b of tableBlocks) dropTableBlock(b);
+    tableBlocks = [];
+    // 清掉整体签名，避免下次因为「签名没变」跳过重建、留下已被清空的标注
+    lastTableSignature = '';
+  }
+
+  // 块的内容签名：只取该块各行文本，不含行号
+  function blockSignature(from, to) {
+    const parts = [];
+    for (let n = from; n <= to; n++) parts.push(cmEditor.getLine(n));
+    return parts.join('\n');
+  }
+
+  function visualWidth(s) {
+    let n = 0;
+    for (const ch of s) n += ch.codePointAt(0) > 0x2e7f ? 2 : 1;
+    return n;
+  }
+
+  // `| a | b |` -> 管道符位置数组（跳过被反斜杠转义的）
+  function pipePositions(text) {
+    const out = [];
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '|' && text[i - 1] !== '\\') out.push(i);
+    }
+    return out;
+  }
+
+  // 标记出落在代码围栏内的行。围栏里的内容原样展示，不该被当成表格渲染 ——
+  // 否则写一段含 `| a | b |` 的示例代码会被硬生生画成表格。
+  function computeFenceMask() {
+    const n = cmEditor.lineCount();
+    const mask = new Array(n);
+    let inFence = false;
+    for (let i = 0; i < n; i++) {
+      const t = cmEditor.getLine(i);
+      if (/^\s*(```|~~~)/.test(t)) { mask[i] = true; inFence = !inFence; }
+      else mask[i] = inFence;
+    }
+    return mask;
+  }
+
+  let lastTableSignature = '';
+
+  function refreshTableMarks() {
+    if (currentMode !== 'modern' || !cmEditor) { clearTableMarks(); return; }
+
+    const lineCount = cmEditor.lineCount();
+    const fence = computeFenceMask();
+    const isRow = (n) => n < lineCount && !fence[n] && TABLE_ROW_RE.test(cmEditor.getLine(n));
+
+    // 先找出所有表格块：[表头行, ...数据行]，分隔行单独记
+    const blocks = [];
+    for (let i = 0; i < lineCount; i++) {
+      if (!isRow(i) || !(i + 1 < lineCount) || fence[i + 1] || !TABLE_SEP_RE.test(cmEditor.getLine(i + 1))) continue;
+      let end = i + 2;
+      while (isRow(end)) end++;
+      blocks.push({ from: i, to: end - 1, sep: i + 1 });
+      i = end - 1;
+    }
+
+    const sigs = blocks.map((b) => blockSignature(b.from, b.to));
+    const overall = sigs.join('\n');
+    if (overall === lastTableSignature) return;
+    lastTableSignature = overall;
+
+    // 逐块比对，只重建真正变化的那一块。
+    // markText 会随编辑自动位移，所以内容没变的块可以直接复用已有标注；
+    // 否则改一张表就要把全文所有表格推倒重来（实测 40 张表时一次编辑要 1.2 秒）。
+    const prev = tableBlocks;
+    const next = [];
+    for (let i = 0; i < blocks.length; i++) {
+      const old = prev[i];
+      if (old && old.sig === sigs[i]) { next.push(old); continue; }   // 复用
+      if (old) dropTableBlock(old);                                   // 内容变了，先摘旧标注
+      next.push({ sig: sigs[i], from: blocks[i].from, to: blocks[i].to, sep: blocks[i].sep,
+                  marks: [], sepHandle: null, dirty: true });
+    }
+    for (let i = blocks.length; i < prev.length; i++) dropTableBlock(prev[i]);  // 表格被删掉了
+    tableBlocks = next;
+
+    const dirty = next.filter((b) => b.dirty);
+    if (dirty.length === 0) return;    // 只是行号漂移，标注无需重建
+    for (const b of dirty) b.dirty = false;
+
+
+    // 统计每列宽度（取所有行里该列最宽的一个）
+    const widths = [];
+    for (const b of blocks) {
+      for (let n = b.from; n <= b.to; n++) {
+        if (n === b.sep) continue;
+        const text = cmEditor.getLine(n);
+        const pipes = pipePositions(text);
+        for (let p = 0; p + 1 < pipes.length; p++) {
+          // 刻意不 trim：单元格区间含管道符两侧的空格，这些空格同样占宽度，
+          // 按 trim 后算会让盒子偏窄、内容折行（实测表头被撑成两行）。
+          const w = visualWidth(text.slice(pipes[p] + 1, pipes[p + 1]));
+          widths[p] = Math.max(widths[p] || 0, w);
+        }
+      }
+    }
+
+    let st = document.getElementById('cm-table-style');
+    if (!st) {
+      st = document.createElement('style');
+      st.id = 'cm-table-style';
+      document.head.appendChild(st);
+    }
+    // 用 em 而不是 ch：ch 是数字 0 的宽度（≈8px），而一个汉字就有 16px，
+    // 用 ch 算出来的宽度会把中文单元格挤到换行（实测表头「姓名」被撑成两行）。
+    // visualWidth 里 1 个 ASCII 记 1、1 个全角记 2，正好对应 0.5em / 1em；
+    // 再加 1.4em 覆盖左右内边距（各 0.5em）与边框、留一点余量。
+    // 只有宽度真的变了才写回：重写 <style> 会触发整页样式重算，是这条路径上
+    // 最贵的一步，不能每次刷新都做。
+    const css = widths
+      .map((w, n) => `.live-preview .${TABLE_COL_CLASS_PREFIX}${n}{width:${(w * 0.5 + 1.4).toFixed(2)}em}`)
+      .join('\n');
+    if (st.textContent !== css) st.textContent = css;
+
+    // 只给需要重建的块打标注；复用中的块由 CodeMirror 自己维护标注位置
+    for (const b of dirty) {
+      for (let n = b.from; n <= b.to; n++) {
+        const text = cmEditor.getLine(n);
+        if (n === b.sep) {
+          // 分隔行：整行标记 + 行级类名，由 CSS 把它压扁成表格的横线。
+          // 行类名挂行句柄而不是行号，编辑导致行号漂移后清理时不会摘错行。
+          if (text.length) {
+            b.marks.push(cmEditor.markText({ line: n, ch: 0 }, { line: n, ch: text.length },
+              { className: 'cm-tbl-sep' }));
+          }
+          const handle = cmEditor.getLineHandle(n);
+          cmEditor.addLineClass(handle, 'text', 'cm-tbl-sep-line');
+          b.sepHandle = handle;
+          continue;
+        }
+        const pipes = pipePositions(text);
+        pipes.forEach((pos) => {
+          b.marks.push(cmEditor.markText({ line: n, ch: pos }, { line: n, ch: pos + 1 },
+            { className: 'cm-tbl-pipe' }));
+        });
+        for (let p = 0; p + 1 < pipes.length; p++) {
+          b.marks.push(cmEditor.markText(
+            { line: n, ch: pipes[p] + 1 }, { line: n, ch: pipes[p + 1] },
+            { className: 'cm-tbl-cell ' + TABLE_COL_CLASS_PREFIX + p + (n === b.from ? ' cm-tbl-head' : '') }));
+        }
+      }
+    }
+  }
+
+  // 表格里按 Tab 新增一行，对齐 Typora 的习惯：在表格末尾追加一行空单元格，
+  // 光标落到新行第一格。列数取自分隔行，所以增删列后新增的行依然对齐。
+  // 不在表格里时返回 CodeMirror.Pass，交回默认行为（正文的 Tab 缩进不受影响）。
+  function tableTabKey(cm) {
+    const pos = cm.getCursor();
+    const lineCount = cm.lineCount();
+    const fence = computeFenceMask();
+    const isRow = (n) => n < lineCount && !fence[n] && TABLE_ROW_RE.test(cm.getLine(n));
+    const isSep = (n) => n < lineCount && !fence[n] && TABLE_SEP_RE.test(cm.getLine(n));
+
+    if (!isRow(pos.line)) return CodeMirror.Pass;
+
+    // 向上、向下扩出包含光标行的表格块
+    let from = pos.line;
+    while (from > 0 && (isRow(from - 1) || isSep(from - 1))) from--;
+    let to = pos.line;
+    while (to + 1 < lineCount && isRow(to + 1)) to++;
+
+    // 块里必须有分隔行，才认定这是一张表（避免把普通含 | 的段落当成表格）
+    let sep = -1;
+    for (let n = from; n <= to; n++) if (isSep(n)) { sep = n; break; }
+    if (sep === -1) return CodeMirror.Pass;
+
+    const cols = pipePositions(cm.getLine(sep)).length - 1;
+    if (cols < 1) return CodeMirror.Pass;
+
+    const newRow = '|' + new Array(cols).fill('   ').join('|') + '|';
+    cm.replaceRange('\n' + newRow, { line: to, ch: cm.getLine(to).length });
+    cm.setCursor({ line: to + 1, ch: 2 });   // 落进第一格（跳过 '| '）
+    return null;                              // 已处理，不再走默认行为
   }
 
   // 只负责按当前文档重建目录内容，不关心侧边栏当前展示的是哪个面板。
@@ -799,13 +1038,16 @@
     }
   }
 
+  // 刷新：既重新扫描目录刷新侧边栏文件列表，也重新读取当前打开的文档。
+  // 两件事互相独立 —— 没有打开任何文件时，仍然会把文件列表刷新一遍
+  // （否则加载了空目录、或当前文件被移除后就再也扫不到新增的文件了）。
   async function refreshCurrentFile() {
-    if (!currentFile) {
-      setStatus('请先加载文件', 'error');
-      return;
-    }
+    // 没有目录句柄（拖入的单个文件）时无从扫描，只能重读该文件本身
     if (!currentFolderHandle) {
-      // 拖入单个文件等场景没有目录句柄：跳过目录扫描，仅重新读取当前文件内容
+      if (!currentFile) {
+        setStatus('请先加载文件夹', 'error');
+        return;
+      }
       setStatus('刷新中...');
       try {
         const entry = findEntryByPath(currentFile);
@@ -817,20 +1059,27 @@
       }
       return;
     }
+
     setStatus('刷新中...');
     try {
       // 重新扫描文件夹以发现新增/删除的文件（含子目录）
       const files = await collectMarkdownFiles(currentFolderHandle);
-
       const oldCount = currentFiles.length;
-
-      // 检查当前文件是否仍然存在
-      const wasRemoved = !files.some(f => f.path === currentFile);
+      const wasRemoved = currentFile ? !files.some(f => f.path === currentFile) : false;
       currentFiles = files;
 
+      // 无论当前有没有打开文件，文件列表都要刷新
       await renderFileList();
 
+      if (!currentFile) {
+        setStatus(files.length ? '文件列表已刷新' : '目录下无 Markdown 文件',
+          files.length ? 'success' : 'error');
+        return;
+      }
+
       if (wasRemoved) {
+        currentFile = null;
+        updateActiveFileItem();
         showEmptyState('当前文件已被移除');
         setStatus('当前文件已被移除', 'error');
         return;
@@ -843,10 +1092,9 @@
         updateActiveFileItem();
       }
 
-      // 检查是否有新文件加入
       const newlyAdded = files.length - oldCount;
       if (newlyAdded > 0) {
-        setStatus('目录已刷新，发现 ' + newlyAdded + ' 个新文件', 'success');
+        setStatus('文件列表已刷新，发现 ' + newlyAdded + ' 个新文件', 'success');
       } else {
         setStatus('已刷新', 'success');
       }
@@ -956,6 +1204,19 @@
     }
   }
 
+  // 现代模式专属的按键映射：
+  //   Enter —— 列表自动续行（`-` / `*` / `1.` / `- [ ]`），空列表项再回车则退出列表；
+  //            由 CodeMirror 官方 addon continuelist 提供（index.html 里引入）。
+  //   Tab   —— 表格里新增一行；不在表格里时 tableTabKey 返回 CodeMirror.Pass，
+  //            交回默认的缩进行为。
+  // 传统模式不挂这两个，按键行为保持原样。
+  // 若 continuelist 没加载成功（CDN 失败），不能把不存在的命令名交给 CodeMirror，
+  // 否则按 Enter 会报错，所以这里探测一下再决定。
+  const MODERN_EXTRA_KEYS = (typeof CodeMirror !== 'undefined' && CodeMirror.commands
+    && CodeMirror.commands.newlineAndIndentContinueMarkdownList)
+    ? { Enter: 'newlineAndIndentContinueMarkdownList', Tab: tableTabKey }
+    : { Tab: tableTabKey };
+
   // 三种界面形态（传统-浏览 / 传统-编辑 / 现代）的显隐统一由这里决定，
   // 不再散落在 toggleEditMode、loadFile、renderFile 各处分别写内联 style。
   function applySurface() {
@@ -974,10 +1235,19 @@
       cmEditor.setOption('lineNumbers', !isModern);
       // 当前行高亮只在现代模式开，传统模式保持原样（见构造处的说明）
       cmEditor.setOption('styleActiveLine', isModern);
+      // 列表续行 / 表格 Tab 只在现代模式生效，传统模式清空以恢复默认按键
+      cmEditor.setOption('extraKeys', isModern ? MODERN_EXTRA_KEYS : {});
       if (editorVisible) cmEditor.refresh();
-      // 删除线标注只在现代模式需要，离开时清掉避免残留
-      if (isModern) refreshStrikeMarks();
-      else clearStrikeMarks();
+      // 删除线 / 任务框 / 表格标注只在现代模式需要，离开时清掉避免残留
+      if (isModern) {
+        refreshStrikeMarks();
+        refreshTaskMarks();
+        refreshTableMarks();
+      } else {
+        clearStrikeMarks();
+        clearTaskMarks();
+        clearTableMarks();
+      }
     } else {
       editorEl.style.display = editorVisible ? '' : 'none';
     }
