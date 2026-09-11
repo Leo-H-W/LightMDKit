@@ -1041,7 +1041,10 @@
     clearImageCache();
     currentFolderHandle = dirHandle;
     folderLabel.textContent = dirHandle.name;
-    folderLabel.title = dirHandle.name;
+    // 完整磁盘路径拿不到：File System Access API 只暴露 name/kind，
+    // 没有 path 类属性（刻意如此，网页不该知道用户选了磁盘上哪个位置）。
+    // 说明写进 tooltip，免得后面又被当成 bug 报一遍。
+    folderLabel.title = dirHandle.name + '\n（受浏览器安全限制，无法获取完整磁盘路径）';
 
     const files = await collectMarkdownFiles(dirHandle);
 
