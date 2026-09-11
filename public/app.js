@@ -511,6 +511,17 @@
     lastTableSignature = '';
   }
 
+  // 整篇替换文档（cmEditor.setValue）之前必须调一次。
+  // setValue 会重建编辑器内容，先前 markText 打的标注随之失效；表格标注还有
+  // 「内容签名未变就跳过重建」的优化，不主动清掉签名的话，刷新后表格就再也画不出来
+  // （实测：现代模式下点「刷新」，表格框线整体消失）。删除线/任务框没有这层缓存，
+  // 每次都会重建，所以只有表格会坏 —— 一并清掉是为了让意图更明确。
+  function resetLivePreviewMarks() {
+    clearStrikeMarks();
+    clearTaskMarks();
+    clearTableMarks();
+  }
+
   // 块的内容签名：只取该块各行文本，不含行号
   function blockSignature(from, to) {
     const parts = [];
@@ -688,7 +699,19 @@
     let to = sep;
     while (to + 1 < lineCount && isRow(to + 1) && !isSep(to + 1)) to++;
 
-    const cols = pipePositions(cm.getLine(sep)).length - 1;
+    // 列数取「本表各行管道符数的最大值」，而不是只数分隔行。
+    // 分隔行少写一组时（例如 `| A | B | C | D |` 配 `|--- | --- | --- |`），
+    // 它比数据行少一个管道符；只数分隔行就会把新行的列数算少 —— 而表格的渲染
+    // 是按每行自己的管道符画的，于是出现「看着 4 列、新增出来 3 列」。
+    // 表格正常时各行一致，取最大值不改变结果。
+    let maxPipes = pipePositions(cm.getLine(sep)).length;
+    for (let n = sep - 1; n >= 0 && isRow(n); n--) {
+      maxPipes = Math.max(maxPipes, pipePositions(cm.getLine(n)).length);
+    }
+    for (let n = sep + 1; n <= to; n++) {
+      maxPipes = Math.max(maxPipes, pipePositions(cm.getLine(n)).length);
+    }
+    const cols = maxPipes - 1;
     if (cols < 1) return CodeMirror.Pass;
 
     const newRow = '|' + new Array(cols).fill('   ').join('|') + '|';
@@ -894,6 +917,7 @@
       if (cmEditor) {
         const cursor = cmEditor.getCursor();
         const scroll = cmEditor.getScrollInfo();
+        resetLivePreviewMarks();          // setValue 会让已有标注失效，先清掉
         cmEditor.setValue(currentMarkdownText);
         cmEditor.setCursor(cursor);
         cmEditor.scrollTo(scroll.left, scroll.top);
@@ -1300,6 +1324,7 @@
     if (next === 'modern') {
       // 现代模式 = 常驻编辑态
       if (currentFile && cmEditor && !isEditMode) {
+        resetLivePreviewMarks();          // setValue 会让已有标注失效，先清掉
         cmEditor.setValue(currentMarkdownText);
       }
       isEditMode = true;
@@ -1355,8 +1380,12 @@
       const topHeadingId = getTopVisibleHeadingId();
       lastViewHeadingId = topHeadingId;
 
-      if (cmEditor) cmEditor.setValue(currentMarkdownText);
-      else editorEl.value = currentMarkdownText;
+      if (cmEditor) {
+        resetLivePreviewMarks();          // setValue 会让已有标注失效，先清掉
+        cmEditor.setValue(currentMarkdownText);
+      } else {
+        editorEl.value = currentMarkdownText;
+      }
 
       isEditMode = true;
       applySurface();
