@@ -16,7 +16,7 @@
     基础主题那批 .cm-s-default .cm-* 颜色就会生效，反而改变现有观感。
   -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5/lib/codemirror.min.css">
-  <link rel="stylesheet" href="style.css?v=14">
+  <link rel="stylesheet" href="style.css?v=19">
 </head>
 <body>
   <div class="app">
@@ -26,10 +26,6 @@
       </div>
       <div class="toolbar-right">
         <button id="btn-new-tab" class="btn" title="在新标签页打开">新tab页</button>
-        <select id="file-select" class="file-select">
-          <option value="" disabled selected>请先加载文件夹...</option>
-          <option value="__LOAD_FOLDER__">&#128193; 加载文件夹...</option>
-        </select>
         <button id="btn-back" class="btn" title="返回上一个文档" disabled>← 返回</button>
         <button id="btn-refresh" class="btn" title="刷新当前文件">刷新</button>
         <button id="btn-edit" class="btn" title="编辑当前文件">编辑</button>
@@ -41,20 +37,43 @@
     <div class="main">
       <aside class="sidebar">
         <div class="resize-handle" title="拖动调整宽度"></div>
-        <div class="sidebar-header">
-          <span class="sidebar-title">目录</span>
-          <button id="btn-toggle-toc" class="btn-toggle" title="隐藏目录">&#9664;</button>
+        <div class="sidebar-load">
+          <button id="btn-load-folder" class="btn-load-folder" title="选择包含 Markdown 文件的目录">&#128193; 加载文件夹...</button>
         </div>
-        <nav id="toc" class="toc">
-          <p class="toc-empty">暂无内容，请先加载文件夹</p>
-        </nav>
+        <div class="sidebar-header">
+          <span class="sidebar-title">导航</span>
+          <button id="btn-toggle-toc" class="btn-toggle" title="隐藏侧边栏">&#9664;</button>
+        </div>
+        <div class="sidebar-view-switch">
+          <button id="btn-view-files" class="view-btn active" title="浏览当前目录下的文件">文件列表</button>
+          <button id="btn-view-toc" class="view-btn" title="浏览当前文档的标题目录">目录</button>
+        </div>
+        <div class="sidebar-panel">
+          <section id="file-panel" class="file-panel">
+            <div class="file-filter-bar">
+              <input id="file-filter" class="file-filter" type="search" placeholder="&#128269; 过滤文件…" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="file-list-header">
+              <span>文件列表</span>
+              <span id="file-count" class="file-count">0</span>
+            </div>
+            <nav id="file-list" class="file-list">
+              <p class="file-empty">暂无内容，请先加载文件夹</p>
+            </nav>
+          </section>
+          <section id="toc-panel" class="toc-panel" hidden>
+            <nav id="toc" class="toc">
+              <p class="toc-empty">暂无内容，请先加载文件夹</p>
+            </nav>
+          </section>
+        </div>
       </aside>
 
       <div class="content-wrapper">
         <div class="content-scroll">
           <article id="content" class="markdown-body">
           <div class="empty-state">
-            <p>从右上角下拉框选择 <strong>"📁 加载文件夹..."</strong> 来加载 Markdown 文件</p>
+            <p>点击左上角的 <strong>"📁 加载文件夹..."</strong> 按钮来加载 Markdown 文件</p>
           </div>
         </article>
         <textarea id="editor" class="markdown-editor" style="display:none;" spellcheck="false"></textarea>
@@ -75,6 +94,6 @@
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
   <script src="md-render.js?v=4"></script>
-  <script src="app.js?v=18"></script>
+  <script src="app.js?v=21"></script>
 </body>
 </html>

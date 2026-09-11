@@ -1,7 +1,7 @@
 (function () {
   const btnRefresh = document.getElementById('btn-refresh');
   const folderLabel = document.getElementById('folder-label');
-  const fileSelect = document.getElementById('file-select');
+  const btnLoadFolder = document.getElementById('btn-load-folder');
   const statusEl = document.getElementById('status');
   const tocEl = document.getElementById('toc');
   const contentEl = document.getElementById('content');
@@ -14,15 +14,28 @@
   const resizeHandle = document.querySelector('.resize-handle');
   const dropOverlay = document.getElementById('drop-overlay');
   const btnMode = document.getElementById('btn-mode');
+  const btnViewFiles = document.getElementById('btn-view-files');
+  const btnViewToc = document.getElementById('btn-view-toc');
+  const filePanel = document.getElementById('file-panel');
+  const tocPanel = document.getElementById('toc-panel');
+  const fileListEl = document.getElementById('file-list');
+  const fileFilter = document.getElementById('file-filter');
 
-  // { name: string, handle: FileSystemFileHandle }[]
+  // { name: string, path: string, handle: FileSystemFileHandle }[]
+  //   name = 文件名（文档内链接用 ./xxx.md 这种写法匹配时靠它）
+  //   path = 相对当前目录根的路径，用 / 分隔（如「业务知识库/核心业务领域.md」），
+  //          递归扫描子目录后 path 才是唯一标识 —— 不同子目录可能有同名文件
   let currentFiles = [];
-  // 当前选中的文件名
+  // 当前选中文件的相对路径（即 entry.path）
   let currentFile = null;
   // 当前文件的原始 markdown 文本
   let currentMarkdownText = '';
   // 标题 id -> markdown 文本中的字符偏移
   let headingOffsets = {};
+  // 重建当前文档目录。这里必须显式声明：函数体在文末才赋值（要包裹视图守卫），
+  // 且 app.js 没有 'use strict' —— 少了这个 let，赋值会变成 window.renderToc 这个
+  // 全局变量，破坏 IIFE「不污染全局」的前提。
+  let renderToc;
   // 是否处于编辑模式
   let isEditMode = false;
   // 界面模式：traditional = 传统模式（编辑/浏览 分离），modern = 现代模式（Typora 式常驻即时渲染）
@@ -45,6 +58,36 @@
       // 存不下不影响本次使用
     }
   }
+
+  // 侧边栏视图：files = 文件列表（当前目录下可打开的文件），toc = 当前文档的标题目录
+  const SIDEBAR_VIEW_KEY = 'lightmdkit.sidebarView';
+  let sidebarView = loadSidebarView();
+
+  function loadSidebarView() {
+    try {
+      return localStorage.getItem(SIDEBAR_VIEW_KEY) === 'toc' ? 'toc' : 'files';
+    } catch (e) {
+      // 隐私模式/禁用存储时 localStorage 会抛异常，回退文件列表
+      return 'files';
+    }
+  }
+
+  function saveSidebarView(view) {
+    try {
+      localStorage.setItem(SIDEBAR_VIEW_KEY, view);
+    } catch (e) {
+      // 存不下不影响本次使用
+    }
+  }
+
+  // 递归扫描的边界：避免误选 node_modules 之类的巨型目录时卡死界面。
+  // 超过上限时停止深入，而不是报错 —— 已扫到的文件照常可用。
+  const SCAN_MAX_DEPTH = 6;
+  const SCAN_MAX_FILES = 3000;
+  // 这些目录对文档浏览没有意义，直接跳过（同时也能避开 pkg 打包产物等噪声）
+  const SCAN_SKIP_DIRS = new Set([
+    'node_modules', '.git', '.svn', '.hg', '.idea', '.vscode', 'dist', 'build',
+  ]);
   // 编辑模式下的自动保存定时器（每 3s 保存一次）
   let autosaveTimer = null;
   const AUTOSAVE_INTERVAL_MS = 3000;
@@ -126,6 +169,82 @@
   function isMarkdownName(name) {
     const ext = (name.split('.').pop() || '').toLowerCase();
     return ext === 'md' || ext === 'markdown';
+  }
+
+  // 统一相对路径的比较口径：反斜杠归一成 /，忽略开头的 ./，大小写不敏感。
+  // 文档内链接里的 ./sub/a.md、sub/a.md、sub\a.md 都要能对应到同一条记录。
+  function normalizePathForMatch(path) {
+    return String(path || '').replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  }
+
+  // 按路径取当前文件记录，取不到再退回按文件名匹配。
+  // 退回分支是为兼容 entry.path 缺失的旧结构（例如只加载了单个文件）。
+  function findEntryByPath(path) {
+    if (!path) return null;
+    const byPath = currentFiles.find(f => f.path === path);
+    if (byPath) return byPath;
+    const target = normalizePathForMatch(path);
+    return currentFiles.find(f => f.path === undefined && f.name === path)
+      || currentFiles.find(f => normalizePathForMatch(f.path || f.name) === target)
+      || null;
+  }
+
+  // 把扫描结果铺平成「目录 → 其下文件」的顺序。
+  // 不能简单地对整条路径做 localeCompare —— 那样 `sub/deep/d.md`（'/'=0x2F）
+  // 会排在 `sub/note.md`（'深'=0x6DF1）前面，子目录和文件交替插花，
+  // 渲染分组时同一个目录就被拆成好几段、标题重复出现。
+  // 这里按树逐层铺：某个目录自身的文件排完，再进它的子目录。
+  function flattenByDirectory(files) {
+    const root = { dirs: new Map(), files: [] };
+    for (const file of files) {
+      const slash = file.path.lastIndexOf('/');
+      const segments = slash === -1 ? [] : file.path.slice(0, slash).split('/');
+      const baseName = slash === -1 ? file.path : file.path.slice(slash + 1);
+      let node = root;
+      for (const seg of segments) {
+        if (!node.dirs.has(seg)) node.dirs.set(seg, { dirs: new Map(), files: [] });
+        node = node.dirs.get(seg);
+      }
+      node.files.push({ baseName, entry: file });
+    }
+
+    const out = [];
+    (function walk(node) {
+      node.files.sort((a, b) => a.baseName.localeCompare(b.baseName));
+      for (const f of node.files) out.push(f.entry);
+      const names = [...node.dirs.keys()].sort((a, b) => a.localeCompare(b));
+      for (const name of names) walk(node.dirs.get(name));
+    })(root);
+    return out;
+  }
+
+  // 递归扫描目录句柄，收集所有可打开的 Markdown 文件。
+  // 返回 [{ name, path, handle }]；path 是相对当前目录根的 / 分隔路径。
+  // 加载文件夹与刷新共用此函数，保证两处扫描口径一致。
+  async function collectMarkdownFiles(dirHandle, prefix = '', depth = 0, out = []) {
+    if (depth > SCAN_MAX_DEPTH || out.length >= SCAN_MAX_FILES) return out;
+
+    const entries = [];
+    for await (const [name, handle] of dirHandle.entries()) {
+      entries.push({ name, handle });
+    }
+    // 让扫描顺序稳定（entries() 的顺序由系统决定），同名排序与旧逻辑一致
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      if (out.length >= SCAN_MAX_FILES) break;
+      const { name, handle } = entry;
+      if (handle.kind === 'directory') {
+        if (SCAN_SKIP_DIRS.has(name)) continue;
+        await collectMarkdownFiles(handle, prefix + name + '/', depth + 1, out);
+      } else if (isMarkdownName(name)) {
+        out.push({ name, path: prefix + name, handle });
+      }
+    }
+
+    // 只在最外层收尾，避免每层递归都重排一次
+    if (depth === 0) return flattenByDirectory(out);
+    return out;
   }
 
   function escapeHtml(str) {
@@ -328,7 +447,10 @@
     }
   }
 
-  function renderToc() {
+  // 只负责按当前文档重建目录内容，不关心侧边栏当前展示的是哪个面板。
+  // 视图守卫在文末赋值给 renderToc 的那个函数里 —— 调用点仍统一写 renderToc()，
+  // 由它决定是否真的重建，否则「读文件 → renderToc」会把文件列表挤掉。
+  renderToc = function () {
     // 现代模式下 contentEl 是隐藏的且可能已经过期，目录改从编辑器原文实时解析
     if (currentMode === 'modern') {
       renderTocFromSource();
@@ -386,38 +508,102 @@
     });
   }
 
-  function updateFileSelect() {
-    fileSelect.innerHTML = '';
+  // 加载文件夹按钮的状态：没加载过时用「加载」，加载过之后允许换一个目录。
+  // 按钮文案不带目录名 —— 目录名已经在顶栏 folder-label 里显示了。
+  function updateLoadFolderButton() {
+    if (!btnLoadFolder) return;
+    btnLoadFolder.textContent = currentFolderHandle ? '\u{1F4C1} 更换文件夹...' : '\u{1F4C1} 加载文件夹...';
+    btnLoadFolder.title = currentFolderHandle
+      ? '重新选择要浏览的目录'
+      : '选择包含 Markdown 文件的目录';
+  }
 
-    // disabled placeholder 确保浏览器显示占位文字，不把"加载文件夹..."顶上来
-    const placeholder = document.createElement('option');
-    placeholder.value = '';
-    placeholder.disabled = true;
-    placeholder.textContent = '请先加载文件夹...';
-    fileSelect.appendChild(placeholder);
+  function updateFileCount() {
+    const countEl = document.getElementById('file-count');
+    if (countEl) countEl.textContent = String(currentFiles.length);
+  }
 
-    const loadOpt = document.createElement('option');
-    loadOpt.value = '__LOAD_FOLDER__';
-    loadOpt.textContent = '\u{1F4C1} 加载文件夹...';
-    fileSelect.appendChild(loadOpt);
+  // 点击左侧文件列表项：走 loadFile 以便复用其错误处理，
+  // 同时维护「返回」历史栈（与文档内链接跳转一致）
+  async function openFileFromList(path) {
+    if (!path || path === currentFile) return;
+    if (currentFile) {
+      fileHistory.push(currentFile);
+      updateBackButton();
+    }
+    await loadFile(path);
+  }
+
+  // 左侧文件列表：按目录分组展示所有可打开的文件，当前文件高亮。
+  // 依赖 currentFiles，因此加载文件夹与刷新之后都要重新渲染。
+  async function renderFileList() {
+    updateFileCount();
+    fileListEl.innerHTML = '';
 
     if (currentFiles.length === 0) {
-      fileSelect.selectedIndex = 0;
+      const empty = document.createElement('p');
+      empty.className = 'file-empty';
+      // 空目录与「还没加载文件夹」是两种处境，提示语不能混用
+      empty.textContent = currentFolderHandle
+        ? '当前目录下没有找到 Markdown 文件'
+        : '暂无内容，请先加载文件夹';
+      fileListEl.appendChild(empty);
       return;
     }
 
-    currentFiles.forEach(f => {
-      const opt = document.createElement('option');
-      opt.value = f.name;
-      opt.textContent = f.name;
-      fileSelect.appendChild(opt);
+    const query = normalizePathForMatch(fileFilter.value.trim());
+    const visible = query
+      ? currentFiles.filter(f => normalizePathForMatch(f.path || f.name).indexOf(query) !== -1)
+      : currentFiles;
+
+    if (visible.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'file-empty';
+      empty.textContent = '没有匹配的文件';
+      fileListEl.appendChild(empty);
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    let lastDir = null;
+
+    visible.forEach(entry => {
+      const path = entry.path || entry.name;
+      const slash = path.lastIndexOf('/');
+      const dir = slash === -1 ? '' : path.slice(0, slash);
+      const baseName = slash === -1 ? path : path.slice(slash + 1);
+
+      // 过滤后的结果里目录可能变得零散，每换一个目录补一个分组标题，
+      // 保证「这个文件在哪个子目录」始终可读
+      if (dir !== lastDir) {
+        const group = document.createElement('div');
+        group.className = 'file-dir';
+        group.textContent = dir || '根目录';
+        if (dir) group.title = dir;
+        fragment.appendChild(group);
+        lastDir = dir;
+      }
+
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'file-item' + (path === currentFile ? ' active' : '');
+      item.dataset.path = path;
+      item.title = path;
+
+      const icon = document.createElement('span');
+      icon.className = 'file-icon';
+      icon.textContent = '\u{1F4C4}';
+
+      const label = document.createElement('span');
+      label.className = 'file-name';
+      label.textContent = baseName;
+
+      item.appendChild(icon);
+      item.appendChild(label);
+      fragment.appendChild(item);
     });
 
-    if (currentFile && currentFiles.some(f => f.name === currentFile)) {
-      fileSelect.value = currentFile;
-    } else {
-      fileSelect.selectedIndex = 0;
-    }
+    fileListEl.appendChild(fragment);
   }
 
   function showEmptyState(msg) {
@@ -427,10 +613,19 @@
 
   async function renderFile(fileEntry) {
     let handle = fileEntry.handle;
-    // 如果可能，从目录重新获取句柄，避免句柄级缓存导致读取到旧内容
-    if (currentFolderHandle && fileEntry.name) {
+    // 如果可能，从目录重新获取句柄，避免句柄级缓存导致读取到旧内容。
+    // 子目录文件必须按 path 逐级取：只传文件名的话根目录没有同名文件时必然
+    // 抛 NotFoundError（静默回退，优化失效），而根目录**有**同名文件时更糟 ——
+    // getFileHandle 会成功返回根目录那个文件，于是读、编辑、保存全作用在错文件上。
+    const relativePath = fileEntry.path;
+    if (currentFolderHandle && typeof relativePath === 'string' && relativePath) {
       try {
-        handle = await currentFolderHandle.getFileHandle(fileEntry.name);
+        const segments = relativePath.split('/').filter(Boolean);
+        let dir = currentFolderHandle;
+        for (let i = 0; i < segments.length - 1; i++) {
+          dir = await dir.getDirectoryHandle(segments[i]);
+        }
+        handle = await dir.getFileHandle(segments[segments.length - 1]);
       } catch (e) {
         // 忽略错误，回退到传入的句柄
       }
@@ -465,6 +660,8 @@
     }
     applySurface();
     renderToc();
+    // 只更新高亮不重建列表：过滤框里正打字时重建会让输入框失焦
+    updateActiveFileItem();
     renderMermaid();
   }
 
@@ -537,17 +734,12 @@
     folderLabel.textContent = dirHandle.name;
     folderLabel.title = dirHandle.name;
 
-    const files = [];
-    for await (const [name, handle] of dirHandle.entries()) {
-      if (handle.kind === 'file' && isMarkdownName(name)) {
-        files.push({ name, handle });
-      }
-    }
-    files.sort((a, b) => a.name.localeCompare(b.name));
+    const files = await collectMarkdownFiles(dirHandle);
 
     currentFiles = files;
     currentFile = null;
-    updateFileSelect();
+    updateLoadFolderButton();
+    await renderFileList();
 
     if (files.length === 0) {
       showEmptyState('该目录下没有找到 Markdown 文件');
@@ -555,16 +747,18 @@
       return;
     }
 
-    const target = (preferredFileName && files.find(f => f.name === preferredFileName)) || files[0];
-    currentFile = target.name;
-    updateFileSelect();
+    // preferredFileName 可能是相对路径（文件列表/拖放传入），
+    // 也可能只是文件名（旧调用），两种情况都要能定位
+    const target = (preferredFileName && findEntryByPath(preferredFileName)) || files[0];
+    currentFile = target.path || target.name;
     await renderFile(target);
+    updateActiveFileItem();
   }
 
+  // 弹出系统目录选择框，加载所选目录（手动选择与「加载文件夹」按钮共用）
   async function selectFolder() {
     if (!window.showDirectoryPicker) {
       setStatus('浏览器不支持文件夹选择，请使用 Chrome 或 Edge', 'error');
-      updateFileSelect();
       return;
     }
     try {
@@ -579,16 +773,17 @@
         console.error(e);
         setStatus(e.message, 'error');
       }
-      updateFileSelect();
+      updateLoadFolderButton();
     }
   }
 
-  async function loadFile(name) {
-    const entry = currentFiles.find(f => f.name === name);
+  // path 既可传相对路径（文件列表转过来的），也可传文件名（文档内链接）
+  async function loadFile(path) {
+    const entry = findEntryByPath(path);
     if (!entry) return;
     setStatus('读取文件...');
     try {
-      currentFile = name;
+      currentFile = entry.path || entry.name;
       // 传统模式切换文件时自动切回浏览模式；现代模式保持常驻编辑态
       if (isEditMode && currentMode !== 'modern') {
         stopAutosave();
@@ -596,7 +791,7 @@
         applySurface();
       }
       await renderFile(entry);
-      updateFileSelect();
+      updateActiveFileItem();
       setStatus('文件已加载', 'success');
     } catch (e) {
       console.error(e);
@@ -613,7 +808,7 @@
       // 拖入单个文件等场景没有目录句柄：跳过目录扫描，仅重新读取当前文件内容
       setStatus('刷新中...');
       try {
-        const entry = currentFiles.find(f => f.name === currentFile);
+        const entry = findEntryByPath(currentFile);
         if (entry) await renderFile(entry);
         setStatus('已刷新', 'success');
       } catch (e) {
@@ -624,25 +819,16 @@
     }
     setStatus('刷新中...');
     try {
-      // 重新扫描文件夹以发现新增/删除的文件
-      const files = [];
-      for await (const [name, handle] of currentFolderHandle.entries()) {
-        if (handle.kind === 'file') {
-          const ext = name.split('.').pop().toLowerCase();
-          if (ext === 'md' || ext === 'markdown') {
-            files.push({ name, handle });
-          }
-        }
-      }
-      files.sort((a, b) => a.name.localeCompare(b.name));
+      // 重新扫描文件夹以发现新增/删除的文件（含子目录）
+      const files = await collectMarkdownFiles(currentFolderHandle);
 
       const oldCount = currentFiles.length;
 
       // 检查当前文件是否仍然存在
-      const wasRemoved = !files.some(f => f.name === currentFile);
+      const wasRemoved = !files.some(f => f.path === currentFile);
       currentFiles = files;
 
-      updateFileSelect();
+      await renderFileList();
 
       if (wasRemoved) {
         showEmptyState('当前文件已被移除');
@@ -651,15 +837,16 @@
       }
 
       // 重新加载当前文件
-      const entry = currentFiles.find(f => f.name === currentFile);
+      const entry = findEntryByPath(currentFile);
       if (entry) {
         await renderFile(entry);
+        updateActiveFileItem();
       }
 
       // 检查是否有新文件加入
       const newlyAdded = files.length - oldCount;
       if (newlyAdded > 0) {
-        setStatus('文件夹已刷新，发现 ' + newlyAdded + ' 个新文件', 'success');
+        setStatus('目录已刷新，发现 ' + newlyAdded + ' 个新文件', 'success');
       } else {
         setStatus('已刷新', 'success');
       }
@@ -675,7 +862,9 @@
     window.open(window.location.href, '_blank');
   });
 
-  // 拦截文档中相对路径的 markdown 文件链接，在同目录下时直接在当前页面打开
+  // 拦截文档中相对路径的 markdown 文件链接，在同目录下时直接在当前页面打开。
+  // 支持子目录：href 中的目录部分相对当前文件所在目录解析（link.md 自然覆盖
+  // 了原先「同目录」的语义，因为此时相对路径就等于文件名）。
   contentEl.addEventListener('click', async (e) => {
     const link = e.target.closest('a');
     if (!link) return;
@@ -683,16 +872,33 @@
     if (!href) return;
     // 跳过外部链接、锚点、mailto 等
     if (/^(https?:|mailto:|#|\/\/)/i.test(href)) return;
-    // 解码并提取文件名（去掉 ./ 前缀）
-    const fileName = decodeURIComponent(href.replace(/^\.\//, ''));
-    const entry = currentFiles.find(f => f.name === fileName);
+
+    // 先按「相对当前文件所在目录」解析，再退回「相对根目录」，
+    // 两种情况都命中不了才放弃（保持与旧逻辑一致的宽松匹配）。
+    // decodeURIComponent 对畸形百分号编码（如 a%zz.md）会抛 URIError，
+    // 而这里是 async 处理器 —— 不接住的话异常会变成没人看到的 Promise 拒绝，
+    // 表现为「点了链接毫无反应」。解不开就当它不是可拦截的相对链接。
+    let hrefPath;
+    try {
+      hrefPath = normalizePathForMatch(decodeURIComponent(href.split(/[?#]/)[0]));
+    } catch (err) {
+      console.warn('[LightMDKit] 链接编码无法解析，按普通链接处理:', href);
+      return;
+    }
+    if (!hrefPath) return;
+    const currentEntry = findEntryByPath(currentFile);
+    const baseDir = currentEntry && currentEntry.path && currentEntry.path.indexOf('/') !== -1
+      ? currentEntry.path.slice(0, currentEntry.path.lastIndexOf('/') + 1)
+      : '';
+    const entry = findEntryByPath(baseDir + hrefPath) || findEntryByPath(hrefPath);
     if (entry) {
       e.preventDefault();
-      if (currentFile && currentFile !== fileName) {
+      const targetPath = entry.path || entry.name;
+      if (currentFile && currentFile !== targetPath) {
         fileHistory.push(currentFile);
         updateBackButton();
       }
-      await loadFile(fileName);
+      await loadFile(targetPath);
     }
   });
 
@@ -709,7 +915,8 @@
 
   async function saveCurrentFile(silent = false) {
     if (!currentFile) return;
-    const entry = currentFiles.find(f => f.name === currentFile);
+    // currentFile 是相对路径，同名文件可能分布在多个子目录，必须按 path 取
+    const entry = findEntryByPath(currentFile);
     if (!entry) return;
     if (!entry.handle || typeof entry.handle.createWritable !== 'function') {
       const msg = '当前文件来源不支持写回保存';
@@ -916,7 +1123,58 @@
       sidebar.style.maxWidth = '';
     }
     btnToggleToc.innerHTML = isCollapsed ? '&#9654;' : '&#9664;';
-    btnToggleToc.title = isCollapsed ? '显示目录' : '隐藏目录';
+    btnToggleToc.title = isCollapsed ? '显示侧边栏' : '隐藏侧边栏';
+  });
+
+  // ---------------- 侧边栏视图：文件列表 / 当前文档目录 ----------------
+  async function setSidebarView(view) {
+    const next = view === 'toc' ? 'toc' : 'files';
+    const changed = next !== sidebarView;
+    sidebarView = next;
+    if (changed) saveSidebarView(next);
+
+    const isFiles = next === 'files';
+    if (filePanel) filePanel.hidden = !isFiles;
+    if (tocPanel) tocPanel.hidden = isFiles;
+    if (btnViewFiles) btnViewFiles.classList.toggle('active', isFiles);
+    if (btnViewToc) btnViewToc.classList.toggle('active', !isFiles);
+
+    // 目录视图的内容由 renderToc 按模式决定（现代模式从编辑器原文解析），
+    // 切回来时重建一次，避免显示的是切走之前的旧内容
+    if (isFiles) {
+      await renderFileList();
+    } else {
+      renderToc();
+    }
+  }
+
+  // 只切换高亮、不重建整个列表 —— 读文件会触发这里，而在过滤框里打字时
+  // 重建列表会让输入框失焦
+  function updateActiveFileItem() {
+    fileListEl.querySelectorAll('.file-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.path === currentFile);
+    });
+  }
+
+  btnViewFiles.addEventListener('click', () => setSidebarView('files'));
+  btnViewToc.addEventListener('click', () => setSidebarView('toc'));
+
+  fileListEl.addEventListener('click', (e) => {
+    const item = e.target.closest('.file-item');
+    if (!item) return;
+    openFileFromList(item.dataset.path);
+  });
+
+  fileFilter.addEventListener('input', () => {
+    renderFileList();
+  });
+  // 按 Esc 清空过滤条件
+  fileFilter.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && fileFilter.value) {
+      e.stopPropagation();
+      fileFilter.value = '';
+      renderFileList();
+    }
   });
 
   // 拖动调整 sidebar 宽度
@@ -1025,10 +1283,10 @@
     if (!currentFolderHandle || !fileHandle) return false;
     for (const f of currentFiles) {
       try {
-        if (await f.handle.isSameEntry(fileHandle)) return true;
+        if (await f.handle.isSameEntry(fileHandle)) return f.path || f.name;
       } catch (e) { /* 比较失败时忽略 */ }
     }
-    return false;
+    return null;
   }
 
   // 弹窗被拦截时，在状态栏给一个可点击的链接兜底
@@ -1076,11 +1334,15 @@
         }
         const file = handle ? await handle.getFile() : item.getAsFile();
         if (!file || !isMarkdownName(file.name)) return;
+        // matchCurrentFolder 命中时返回该文件在已加载目录中的相对路径，
+        // 新标签页据此把文件列表高亮定位到子目录里的对应文件
+        const matchedPath = await matchCurrentFolder(handle);
         const record = {
           fileName: file.name,
+          filePath: matchedPath || null,
           fileHandle: handle || null,
           fileBlob: handle ? null : file,
-          folderHandle: (await matchCurrentFolder(handle)) ? currentFolderHandle : null,
+          folderHandle: matchedPath ? currentFolderHandle : null,
         };
         await openDropInNewTab(record);
         opened++;
@@ -1142,8 +1404,8 @@
     try {
       if (record.folderHandle) {
         // 拿到了目录句柄（拖入文件夹，或文件位于当前已加载目录）：
-        // 文件列表定位到该目录，并选中对应文件
-        await loadFolderHandle(record.folderHandle, record.fileName);
+        // 文件列表定位到该目录，并选中对应文件（优先用相对路径，能定位到子目录）
+        await loadFolderHandle(record.folderHandle, record.filePath || record.fileName);
         document.title = record.folderHandle.name + ' - LightMDKit';
         if (record.fileName) {
           setStatus('已在新标签页打开 ' + record.fileName, 'success');
@@ -1156,12 +1418,15 @@
           getFile: async () => record.fileBlob,
         };
         currentFolderHandle = null;
-        currentFiles = [{ name: record.fileName, handle }];
+        // 单文件没有目录，path 就等于文件名 —— 让文件列表与高亮逻辑
+        // 始终有唯一的 path 可用，不必到处判空
+        currentFiles = [{ name: record.fileName, path: record.fileName, handle }];
         currentFile = record.fileName;
+        await renderFileList();
         folderLabel.textContent = record.fileName;
         folderLabel.title = '浏览器安全限制，无法自动定位到文件所在目录';
         document.title = record.fileName + ' - LightMDKit';
-        updateFileSelect();
+        updateLoadFolderButton();
         await renderFile(currentFiles[0]);
         setStatus('已打开拖入的文件（浏览器限制未定位所在目录，可手动“加载文件夹”）');
       }
@@ -1171,15 +1436,9 @@
     }
   }
 
-  fileSelect.addEventListener('change', async (e) => {
-    const val = e.target.value;
-    if (val === '__LOAD_FOLDER__') {
-      fileSelect.selectedIndex = 0;
-      await selectFolder();
-    } else if (val) {
-      await loadFile(val);
-    }
-  });
+  if (btnLoadFolder) {
+    btnLoadFolder.addEventListener('click', selectFolder);
+  }
 
   let observer = null;
   function setupTocObserver() {
@@ -1199,9 +1458,12 @@
     headings.forEach(h => observer.observe(h));
   }
 
-  const originalRenderToc = renderToc;
+  // 侧边栏不在「目录」视图时，重建目录毫无意义（还会把文件列表挤掉），
+  // 直接返回；只有视图是目录时才重建内容并重建滚动高亮监听。
+  const renderTocContent = renderToc;
   renderToc = function () {
-    originalRenderToc();
+    if (sidebarView !== 'toc') return;
+    renderTocContent();
     setupTocObserver();
   };
 
@@ -1217,7 +1479,9 @@
   }
   applySurface();
 
-  updateFileSelect();
+  updateLoadFolderButton();
+  // 恢复上次使用的侧边栏视图（文件列表 / 目录）
+  setSidebarView(sidebarView);
   idbPurgeExpired();
   initFromDropParam();
 })();
