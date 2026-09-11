@@ -1,13 +1,62 @@
 {
-  "generated_at": "2026-05-01T08:34:34Z",
-  "git_commit": null,
-  "git_branch": null,
+  "generated_at": "2026-09-11T07:10:00Z",
+  "git_commit": "f71e683",
+  "git_commit_full": "f71e6839f9f2287bb2e797261a39b8126af79368",
+  "git_branch": "feat/sidebar-file-browser",
   "generator_version": "1.0.0",
   "repository_info": {
+    "name": "lightmdkit",
+    "display_name": "LightMDKit",
+    "version": "1.0.0",
+    "description": "Lightweight no-install local Markdown editor and viewer with GitHub-style rendering",
     "primary_language": "JavaScript",
-    "frameworks": ["Express", "marked"],
+    "runtime": "Node.js 18 (pkg bundled)",
+    "frameworks": ["Express", "marked", "CodeMirror 5", "Mermaid", "github-markdown-css"],
     "is_library": false,
-    "has_api": true
+    "has_api": true,
+    "is_git_repo": true,
+    "total_commits": 15,
+    "entry_point": "server.js",
+    "default_port": 3456,
+    "has_tests": false,
+    "has_build_step": true,
+    "build_command": "npm run build:win",
+    "build_artifact": "dist/lightmdkit.exe",
+    "platforms": ["win32", "linux", "darwin"]
   },
-  "repository_dependencies": ["express", "marked"]
+  "repository_dependencies": ["express", "marked"],
+  "dev_dependencies": ["pkg"],
+  "cdn_dependencies": [
+    "github-markdown-css@5",
+    "codemirror@5",
+    "mermaid@11",
+    "marked@12"
+  ],
+  "git_info": {
+    "head_commit": "f71e6839f9f2287bb2e797261a39b8126af79368",
+    "head_short": "f71e683",
+    "branch": "feat/sidebar-file-browser",
+    "main_branch_head": "3bbca34",
+    "commit_count": 15,
+    "first_commit_date": "2026-08-15",
+    "last_commit_date": "2026-09-11",
+    "working_tree_clean": true,
+    "baseline_note": "kb 文档描述的是 2026-09-11 的工作区代码，其代码内容对应提交 f71e683（分支 feat/sidebar-file-browser，在 main 的 3bbca34 之上）。行号请直接对工作区文件核对，不要用 git show 3bbca34:... （该版本不含侧边栏文件浏览器等功能，行号对不上）。",
+    "uncommitted_note": "无未提交内容。代码改动见 f71e683，本知识库文档本身见其后的 docs: 提交。"
+  },
+  "kb_documents": [
+    "仓库概览.md",
+    "仓库架构.md",
+    "仓库依赖.md",
+    "外部接入指南.md",
+    "基于git记录优化.md",
+    "业务知识库/核心业务领域.md",
+    "业务知识库/业务流程索引.md",
+    "业务知识库/业务流程详解.md",
+    "技术知识库/API索引.md",
+    "技术知识库/数据结构.md",
+    "技术知识库/代码编写指南.md",
+    "技术知识库/排障指南.md",
+    "测试知识库/单元测试.md"
+  ]
 }
