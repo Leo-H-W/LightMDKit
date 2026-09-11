@@ -152,6 +152,7 @@
       updateSepReveal();   // 光标进入表头行时分隔行要展开
     });
 
+    bindTableClickFix();   // 修正表格行里鼠标点击的光标落点
   } catch (e) {
     console.warn('CodeMirror/Mermaid init failed, falling back to textarea:', e);
     cmEditor = null;
@@ -863,6 +864,64 @@
     const pos = cm.getCursor();
     if (!tableCellAt(cm, pos.line, pos.ch)) return CodeMirror.Pass;
     cm.replaceSelection('<br>');
+    return null;
+  }
+
+  // 表格行里鼠标点击的落点修正。
+  //
+  // 为什么只能在这一层拦：CodeMirror 的 onMouseDown 挂在 display.scroller（wrapper 的
+  // 子节点）上，它调用的是模块内部的 coordsChar(cm, x, y) —— 那个函数不对外暴露，
+  // 所以从外面覆盖 cm.coordsChar 拦不住（试过，无效）。唯一能插手的点是 DOM 事件：
+  // 在 wrapper 的**捕获阶段**处理并 stopPropagation，事件就到不了 scroller。
+  //
+  // CM 那套为什么对表格完全不准：coordsChar 按「等宽字符 + 等行高」估算位置，而表格行里
+  // 管道符被压成 1px、单元格是定宽 inline-block、分隔行还被压成 0 高 —— 实际版面与模型
+  // 差得很远，实测点在第一个单元格中间、光标会落到行尾甚至下一行。
+  //
+  // 代价：单元格内的拖拽选字会被一并拦掉（CM 收不到 mousedown）。表格外不受影响。
+  function bindTableClickFix() {
+    if (!cmEditor) return;
+    const wrapper = cmEditor.getWrapperElement();
+    wrapper.addEventListener('mousedown', (e) => {
+      if (currentMode !== 'modern') return;
+      const pos = tablePosFromEvent(e);
+      if (!pos) return;                        // 不在表格行里，交回 CodeMirror
+      e.preventDefault();
+      e.stopPropagation();
+      cmEditor.setCursor(pos);
+      cmEditor.focus();
+    }, true);
+  }
+
+  // 由鼠标事件算出表格里的文本位置；不在表格行上返回 null
+  function tablePosFromEvent(e) {
+    const lineEl = e.target && e.target.closest ? e.target.closest('.CodeMirror-line') : null;
+    if (!lineEl) return null;
+    const cells = [...lineEl.querySelectorAll('.cm-tbl-cell')];
+    if (!cells.length) return null;
+
+    // 行号从 DOM 推：渲染出的行是连续的，getViewport().from 是渲染区间的起始行号。
+    // 不能用 lineAtHeight —— 它同样按等行高估算，会把被压成 0 高的分隔行算成整行高。
+    const rendered = [...document.querySelectorAll('.CodeMirror-line')];
+    const idx = rendered.indexOf(lineEl);
+    if (idx < 0) return null;
+    const line = cmEditor.getViewport().from + idx;
+
+    const text = cmEditor.getLine(line);
+    if (text === undefined) return null;
+    const pipes = pipePositions(text);
+
+    for (let p = 0; p + 1 < pipes.length; p++) {
+      const el = cells[p];
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right) continue;
+      const pad = 8;                    // 与 style.css 里 .cm-tbl-cell 的左右内边距一致
+      const inner = Math.max(1, r.width - pad * 2);
+      const frac = Math.min(1, Math.max(0, (e.clientX - (r.left + pad)) / inner));
+      const start = pipes[p] + 1;
+      return { line, ch: start + Math.round(frac * (pipes[p + 1] - start)) };
+    }
     return null;
   }
 
