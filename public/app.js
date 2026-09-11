@@ -151,6 +151,7 @@
       updateActiveTocItemByCursor();
       updateSepReveal();   // 光标进入表头行时分隔行要展开
     });
+
   } catch (e) {
     console.warn('CodeMirror/Mermaid init failed, falling back to textarea:', e);
     cmEditor = null;
@@ -499,6 +500,8 @@
   // 于是表现为「点倒数第二行才多出一行 | | | |」。
   const TABLE_SEP_RE = /^\s*\|(?:\s*:?-{3,}:?\s*\|)+\s*$/;
   const TABLE_COL_CLASS_PREFIX = 'cm-tbl-c';
+  // 单元格内的换行标记（Ctrl+Enter 插入，或作者手写）。兼容 <br> / <br/> / <br />
+  const TABLE_BR_RE = /<br\s*\/?>/gi;
   // 每个表格块一份记录，便于「只重建变化的那张表」而不是全文推倒重来。
   // { sig, marks: [], sepHandle }
   //   sig       —— 该块的内容签名（只含文本，不含行号：插入/删除行会让行号漂移，
@@ -534,6 +537,8 @@
       b.sepOpen = open;
       if (open) cmEditor.addLineClass(b.sepHandle, 'text', 'cm-tbl-sep-open');
       else cmEditor.removeLineClass(b.sepHandle, 'text', 'cm-tbl-sep-open');
+      // 展开/收起改变了这一行的高度，同样要让 CM 重新测量
+      cmEditor.refresh();
     }
   }
 
@@ -647,7 +652,8 @@
         for (let p = 0; p + 1 < pipes.length; p++) {
           // 刻意不 trim：单元格区间含管道符两侧的空格，这些空格同样占宽度，
           // 按 trim 后算会让盒子偏窄、内容折行（实测表头被撑成两行）。
-          const w = visualWidth(text.slice(pipes[p] + 1, pipes[p + 1]));
+          // <br> 会被渲染成换行、不占字符宽度，算列宽时先去掉，否则列会被撑宽。
+          const w = visualWidth(text.slice(pipes[p] + 1, pipes[p + 1]).replace(TABLE_BR_RE, ''));
           widths[p] = Math.max(widths[p] || 0, w);
         }
       }
@@ -692,67 +698,172 @@
             { className: 'cm-tbl-pipe' }));
         });
         for (let p = 0; p + 1 < pipes.length; p++) {
+          const cellStart = pipes[p] + 1;
+          const cellEnd = pipes[p + 1];
           b.marks.push(cmEditor.markText(
-            { line: n, ch: pipes[p] + 1 }, { line: n, ch: pipes[p + 1] },
+            { line: n, ch: cellStart }, { line: n, ch: cellEnd },
             { className: 'cm-tbl-cell ' + TABLE_COL_CLASS_PREFIX + p + (n === b.from ? ' cm-tbl-head' : '') }));
+
+          // 单元格里的 <br> 只做弱化提示，不在这里渲染成真换行。
+          // 试过用 replacedWith 换成 <br> 节点：那个标记与上面的单元格标记**重叠**，
+          // 而 CodeMirror 会把重叠的标记拆成相邻 span —— 单元格被劈成两个盒子
+          // （实测 3 列的表格渲染成 4 格）。真换行交给预览端 marked 处理。
+          const seg = cmEditor.getLine(n).slice(cellStart, cellEnd);
+          TABLE_BR_RE.lastIndex = 0;
+          let bm;
+          while ((bm = TABLE_BR_RE.exec(seg)) !== null) {
+            const at = cellStart + bm.index;
+            b.marks.push(cmEditor.markText(
+              { line: n, ch: at }, { line: n, ch: at + bm[0].length },
+              { className: 'cm-tbl-br' }));
+          }
         }
       }
     }
 
     updateSepReveal();   // 重建后按当前光标位置决定分隔行是否展开
+
+    // 必须让 CodeMirror 重新测量行高：分隔行被 CSS 压成 0 高（.cm-tbl-sep-line），
+    // 而 CM 内部的高度模型里它仍占满一行 —— 不刷新的话，它的「y 坐标 → 行号」换算
+    // 会整体偏下，表现为鼠标点在表格第 2 行、光标却落到第 3 行。
+    // 这里只在表格标注真正重建过之后调用，不是每次防抖都调，避免无谓的开销。
+    cmEditor.refresh();
   }
 
-  // 表格里按 Tab 新增一行，对齐 Typora 的习惯：在表格末尾追加一行空单元格，
-  // 光标落到新行第一格。列数取自分隔行，所以增删列后新增的行依然对齐。
-  // 不在表格里时返回 CodeMirror.Pass，交回默认行为（正文的 Tab 缩进不受影响）。
-  function tableTabKey(cm) {
-    const pos = cm.getCursor();
+  // ---------------- 表格内的按键导航 ----------------
+  // 下面这些共用一套「某行是不是表格行 / 分隔行」的判定，Tab、Enter、Ctrl+Enter
+  // 三处复用，避免各写一份导致行为跑偏。
+
+  function tableLineTesters(cm) {
     const lineCount = cm.lineCount();
     const fence = computeFenceMask();
-    const isRow = (n) => n < lineCount && !fence[n] && TABLE_ROW_RE.test(cm.getLine(n));
-    const isSep = (n) => n < lineCount && !fence[n] && TABLE_SEP_RE.test(cm.getLine(n));
+    return {
+      lineCount,
+      isRow: (n) => n < lineCount && !fence[n] && TABLE_ROW_RE.test(cm.getLine(n)),
+      isSep: (n) => n < lineCount && !fence[n] && TABLE_SEP_RE.test(cm.getLine(n)),
+    };
+  }
 
-    if (!isRow(pos.line)) return CodeMirror.Pass;
+  // 找出光标所在表格的范围；不在表格里返回 null。
+  // 关键是「遇到分隔行就停」：两张表紧邻（中间没有空行）时，一路向上找第一个
+  // 分隔行会拿到上一张表的，列数随之算错（实测 4 列表格新增出 3 列）。
+  function findTableAtCursor(cm, t) {
+    const pos = cm.getCursor();
+    if (!t.isRow(pos.line)) return null;
 
-    // 找出「光标所在这张表」的分隔行 —— 关键是遇到分隔行就停，
-    // 不能一路向上找第一个分隔行：两张表紧邻（中间没有空行）时，那样会拿到
-    // 上一张表的分隔行，新增行就会按上一张表的列数生成（实测 4 列表格新增出 3 列）。
     let sep = -1;
-    if (isSep(pos.line)) {
-      sep = pos.line;                                        // 光标就在分隔行上
-    } else if (pos.line + 1 < lineCount && isSep(pos.line + 1)) {
-      sep = pos.line + 1;                                    // 光标在表头行
+    if (t.isSep(pos.line)) {
+      sep = pos.line;                                    // 光标就在分隔行上
+    } else if (pos.line + 1 < t.lineCount && t.isSep(pos.line + 1)) {
+      sep = pos.line + 1;                                // 光标在表头行
     } else {
-      // 光标在数据行：向上走，直到上方就是本表的分隔行
-      let n = pos.line;
-      while (n - 1 >= 0 && isRow(n - 1) && !isSep(n - 1)) n--;
-      if (n - 1 >= 0 && isSep(n - 1)) sep = n - 1;
+      let n = pos.line;                                  // 光标在数据行：向上走到本表的分隔行
+      while (n - 1 >= 0 && t.isRow(n - 1) && !t.isSep(n - 1)) n--;
+      if (n - 1 >= 0 && t.isSep(n - 1)) sep = n - 1;
     }
-    if (sep === -1) return CodeMirror.Pass;
+    if (sep === -1) return null;
 
-    // 本表数据区的最后一行：从分隔行往下，遇到下一个分隔行就停
-    let to = sep;
-    while (to + 1 < lineCount && isRow(to + 1) && !isSep(to + 1)) to++;
+    let to = sep;                                        // 数据区最后一行：遇到下一个分隔行就停
+    while (to + 1 < t.lineCount && t.isRow(to + 1) && !t.isSep(to + 1)) to++;
+    // 把行判定也带上：tableCols / appendTableRow 拿到这个对象后还要按行判断，
+    // 挂在对象上比一路透传参数省事，也不会有「t 到底是判定器还是表格」的歧义。
+    return { sep, header: sep - 1, to, isRow: t.isRow, isSep: t.isSep, lineCount: t.lineCount };
+  }
 
-    // 列数取「本表各行管道符数的最大值」，而不是只数分隔行。
-    // 分隔行少写一组时（例如 `| A | B | C | D |` 配 `|--- | --- | --- |`），
-    // 它比数据行少一个管道符；只数分隔行就会把新行的列数算少 —— 而表格的渲染
-    // 是按每行自己的管道符画的，于是出现「看着 4 列、新增出来 3 列」。
-    // 表格正常时各行一致，取最大值不改变结果。
-    let maxPipes = pipePositions(cm.getLine(sep)).length;
-    for (let n = sep - 1; n >= 0 && isRow(n); n--) {
+  // 本表列数 = 各行管道符数的最大值 - 1。
+  // 不只看分隔行：分隔行少写一组时（4 列表头配 `|--- | --- | --- |`）它比数据行少
+  // 一个管道符，只看它会算少 —— 而渲染是按每行自己的管道符画的，于是「看着 4 列、
+  // 新增出来 3 列」。表格正常时各行一致，取最大值不改变结果。
+  function tableCols(cm, t) {
+    let maxPipes = pipePositions(cm.getLine(t.sep)).length;
+    for (let n = t.header; n >= 0 && t.isRow(n); n--) {
       maxPipes = Math.max(maxPipes, pipePositions(cm.getLine(n)).length);
     }
-    for (let n = sep + 1; n <= to; n++) {
+    for (let n = t.sep + 1; n <= t.to; n++) {
       maxPipes = Math.max(maxPipes, pipePositions(cm.getLine(n)).length);
     }
-    const cols = maxPipes - 1;
-    if (cols < 1) return CodeMirror.Pass;
+    return maxPipes - 1;
+  }
 
+  // 光标在第 line 行的第几格里；不在表格行上返回 null
+  function tableCellAt(cm, line, ch) {
+    const text = cm.getLine(line);
+    if (text === undefined || !TABLE_ROW_RE.test(text)) return null;
+    const pipes = pipePositions(text);
+    if (pipes.length < 2) return null;
+    const at = (ch === undefined) ? cm.getCursor().ch : ch;
+    for (let p = 0; p + 1 < pipes.length; p++) {
+      if (at >= pipes[p] && at <= pipes[p + 1]) {
+        return { index: p, start: pipes[p] + 1, end: pipes[p + 1] };
+      }
+    }
+    return null;
+  }
+
+  // 跳到第 line 行第 col 格的格首（跳过竖线后的空格）
+  function moveToTableCell(cm, line, col) {
+    const text = cm.getLine(line) || '';
+    const pipes = pipePositions(text);
+    let ch = pipes[col] !== undefined ? pipes[col] + 1 : 0;
+    while (ch < text.length && text[ch] === ' ') ch++;
+    cm.setCursor({ line, ch });
+  }
+
+  // 在表格末尾追加一行空单元格，光标落到第 col 格
+  function appendTableRow(cm, t, col) {
+    const cols = tableCols(cm, t);
+    if (cols < 1) return false;
     const newRow = '|' + new Array(cols).fill('   ').join('|') + '|';
-    cm.replaceRange('\n' + newRow, { line: to, ch: cm.getLine(to).length });
-    cm.setCursor({ line: to + 1, ch: 2 });   // 落进第一格（跳过 '| '）
-    return null;                              // 已处理，不再走默认行为
+    cm.replaceRange('\n' + newRow, { line: t.to, ch: cm.getLine(t.to).length });
+    moveToTableCell(cm, t.to + 1, Math.min(col, cols - 1));
+    return true;
+  }
+
+  // Tab：表格里新增一行（Typora 习惯）。不在表格里时交回默认缩进行为。
+  function tableTabKey(cm) {
+    const t = tableLineTesters(cm);
+    const table = findTableAtCursor(cm, t);
+    if (!table) return CodeMirror.Pass;
+    return appendTableRow(cm, table, 0) ? null : CodeMirror.Pass;
+  }
+
+  // Enter：跳到下一行的同一格；已在最后一行则先追加一行再跳过去（与 Tab 一致）。
+  // 不在表格里时必须显式转交给「列表续行」命令 —— Enter 已被本函数接管，
+  // 直接返回 Pass 的话正文里按回车就不会续行列表了。
+  function tableEnterKey(cm) {
+    const fallback = () => {
+      const cmd = CodeMirror.commands.newlineAndIndentContinueMarkdownList;
+      return cmd ? cmd(cm) : CodeMirror.Pass;
+    };
+    const t = tableLineTesters(cm);
+    const table = findTableAtCursor(cm, t);
+    if (!table) return fallback();
+
+    const pos = cm.getCursor();
+    const cell = tableCellAt(cm, pos.line, pos.ch);
+    if (!cell) return fallback();
+
+    if (pos.line < table.to) {
+      let next = pos.line + 1;
+      if (next === table.sep) next++;      // 光标在表头行时，下一行是分隔行，跳过它
+      moveToTableCell(cm, next, cell.index);
+      return null;
+    }
+    return appendTableRow(cm, table, cell.index) ? null : fallback();
+  }
+
+  // Ctrl+Enter：单元格内换行 —— 插入字面量 `<br>`。
+  // 之所以不插真换行：markdown 表格的一行就是一行，真换行会把内容变成表格外的
+  // 新行。`<br>` 在预览端被 marked 当 HTML 换行，在编辑器端由 refreshTableMarks
+  // 渲染成真换行，两端表现一致。
+  function tableCtrlEnterKey(cm) {
+    const t = tableLineTesters(cm);
+    const table = findTableAtCursor(cm, t);
+    if (!table) return CodeMirror.Pass;
+    const pos = cm.getCursor();
+    if (!tableCellAt(cm, pos.line, pos.ch)) return CodeMirror.Pass;
+    cm.replaceSelection('<br>');
+    return null;
   }
 
   // 只负责按当前文档重建目录内容，不关心侧边栏当前展示的是哪个面板。
@@ -1285,10 +1396,13 @@
   // 传统模式不挂这两个，按键行为保持原样。
   // 若 continuelist 没加载成功（CDN 失败），不能把不存在的命令名交给 CodeMirror，
   // 否则按 Enter 会报错，所以这里探测一下再决定。
-  const MODERN_EXTRA_KEYS = (typeof CodeMirror !== 'undefined' && CodeMirror.commands
-    && CodeMirror.commands.newlineAndIndentContinueMarkdownList)
-    ? { Enter: 'newlineAndIndentContinueMarkdownList', Tab: tableTabKey }
-    : { Tab: tableTabKey };
+  // Enter 交给 tableEnterKey：表格里做单元格导航，表格外显式转交「列表续行」。
+  // Ctrl+Enter 在单元格里插 <br>（换行），表格外交回默认。
+  const MODERN_EXTRA_KEYS = {
+    Enter: tableEnterKey,
+    'Ctrl-Enter': tableCtrlEnterKey,
+    Tab: tableTabKey,
+  };
 
   // 三种界面形态（传统-浏览 / 传统-编辑 / 现代）的显隐统一由这里决定，
   // 不再散落在 toggleEditMode、loadFile、renderFile 各处分别写内联 style。

@@ -779,6 +779,15 @@ html {
   color: #59636e;
 }
 
+/* 单元格里的 <br>：编辑器里不渲染成真换行（那会劈开单元格盒子，见 app.js 说明），
+   只把它弱化成一个小标记，提示这里有换行；真换行在预览端由 marked 渲染。 */
+.live-preview .CodeMirror-line .cm-tbl-br {
+  font-size: 11px;
+  color: #8c959f;
+  background: rgba(129, 139, 152, 0.12);
+  border-radius: 3px;
+}
+
 /*
  * 表格不做「光标行还原源码」。
  *
