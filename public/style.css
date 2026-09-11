@@ -599,6 +599,104 @@ html {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
+/* 新建文件弹窗 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(31, 35, 40, 0.45);
+}
+
+.modal-overlay.hidden {
+  display: none;
+}
+
+.modal {
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  background: #ffffff;
+  border: 1px solid #d1d9e0;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.modal-title {
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2328;
+  background: #f6f8fa;
+  border-bottom: 1px solid #d1d9e0;
+}
+
+.modal-body {
+  padding: 16px;
+}
+
+.modal-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: #1f2328;
+}
+
+.modal-input {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #1f2328;
+  background: #ffffff;
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+  outline: none;
+}
+
+.modal-input:focus {
+  border-color: #0969da;
+  box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.15);
+}
+
+.modal-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #656d76;
+  /* 保留换行：目录名过长或提示多行时能正常折行显示 */
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.modal-hint.error {
+  color: #cf222e;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #f6f8fa;
+  border-top: 1px solid #d1d9e0;
+}
+
+.btn-primary {
+  background: #1f883d;
+  border-color: #1f883d;
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background: #1a7f37;
+}
+
+.btn-primary:active {
+  background: #187733;
+}
+
 /* ============================================================
    现代模式：Typora 式实时预览
 

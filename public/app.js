@@ -20,6 +20,12 @@
   const tocPanel = document.getElementById('toc-panel');
   const fileListEl = document.getElementById('file-list');
   const fileFilter = document.getElementById('file-filter');
+  const btnNewFile = document.getElementById('btn-new-file');
+  const newFileModal = document.getElementById('new-file-modal');
+  const newFileName = document.getElementById('new-file-name');
+  const newFileHint = document.getElementById('new-file-hint');
+  const btnNewFileCreate = document.getElementById('btn-new-file-create');
+  const btnNewFileCancel = document.getElementById('btn-new-file-cancel');
 
   // { name: string, path: string, handle: FileSystemFileHandle }[]
   //   name = 文件名（文档内链接用 ./xxx.md 这种写法匹配时靠它）
@@ -1346,6 +1352,146 @@
       setStatus(e.message, 'error');
     }
   }
+
+  // ---------------- 新建文件 ----------------
+  // 只能在「当前已加载的目录」里新建：浏览器的 File System Access API 拿不到绝对路径，
+  // 也不允许往任意位置写文件，句柄就是唯一的写入入口。
+  // 初始内容给一个与文件名同名的标题，方便直接开始写。
+  function newFileTemplate(fileName) {
+    return '# ' + fileName.replace(/\.(md|markdown)$/i, '') + '\n\n';
+  }
+
+  function setNewFileHint(msg, isError) {
+    newFileHint.textContent = msg;
+    newFileHint.className = 'modal-hint' + (isError ? ' error' : '');
+  }
+
+  function openNewFileDialog() {
+    if (!currentFolderHandle) {
+      setStatus('请先加载文件夹', 'error');
+      return;
+    }
+    newFileName.value = '';
+    // 目录句柄只给得到文件夹名，拿不到完整磁盘路径（浏览器安全限制，见顶栏提示）
+    setNewFileHint('保存位置：' + currentFolderHandle.name + '（当前文件夹）\n'
+      + '只支持 .md / .markdown；不写扩展名时自动补 .md', false);
+    newFileModal.classList.remove('hidden');
+    newFileName.focus();
+  }
+
+  function closeNewFileDialog() {
+    newFileModal.classList.add('hidden');
+  }
+
+  // 校验文件名；返回 { ok, name } 或 { ok: false, msg }
+  function validateNewFileName(raw) {
+    const name = String(raw || '').trim();
+    if (!name) return { ok: false, msg: '请输入文件名' };
+    if (/[\\/]/.test(name)) return { ok: false, msg: '文件名不能包含路径分隔符（\\ 或 /）' };
+    // 这些字符在 Windows 文件名里非法，提前挡掉比等浏览器报错更清楚
+    if (/[<>:"|?*]/.test(name)) return { ok: false, msg: '文件名不能包含 < > : " | ? * 这些字符' };
+    if (/[. ]$/.test(name)) return { ok: false, msg: '文件名不能以点或空格结尾' };
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name.split('.')[0])) {
+      return { ok: false, msg: '「' + name + '」是 Windows 保留名，请换一个' };
+    }
+
+    // 没写扩展名就补 .md；写了别的扩展名则拒绝（本应用只打开 markdown）
+    const finalName = name.indexOf('.') === -1 ? name + '.md' : name;
+    const ext = (finalName.split('.').pop() || '').toLowerCase();
+    if (ext !== 'md' && ext !== 'markdown') {
+      return { ok: false, msg: '只支持 .md / .markdown 文件' };
+    }
+
+    // 重名必须在这里挡掉：getFileHandle 的 create:true 在文件已存在时会直接返回它，
+    // 后面的写入会把原有内容覆盖掉
+    if (currentFiles.some(f => f.path === finalName)) {
+      return { ok: false, msg: '当前目录下已存在「' + finalName + '」，请换个名字' };
+    }
+    return { ok: true, name: finalName };
+  }
+
+  // 把浏览器的写入类异常翻译成用户能看懂的话
+  function describeWriteError(e, fileName) {
+    const errName = e && e.name;
+    if (errName === 'NotAllowedError' || errName === 'SecurityError') {
+      return '没有写入权限：这个目录是以只读方式打开的（例如直接拖入的文件夹）。\n请用「加载文件夹」重新选择目录后再试。';
+    }
+    if (errName === 'NoModificationAllowedError' || errName === 'InvalidModificationError') {
+      return '无法创建「' + fileName + '」：目录不可修改，或已存在同名项。';
+    }
+    if (errName === 'TypeError') {
+      return '文件名不合法，请换一个。';
+    }
+    return '创建失败：' + ((e && e.message) || '未知错误');
+  }
+
+  // 重新扫描目录后打开指定文件（新建文件之后用）
+  async function rescanAndOpen(targetPath) {
+    try {
+      const files = await collectMarkdownFiles(currentFolderHandle);
+      currentFiles = files;
+      await renderFileList();
+      const entry = findEntryByPath(targetPath);
+      if (!entry) return;
+      currentFile = entry.path || entry.name;
+      await renderFile(entry);
+      updateActiveFileItem();
+    } catch (e) {
+      console.error(e);
+      setStatus('刷新文件列表失败: ' + e.message, 'error');
+    }
+  }
+
+  async function createNewFile() {
+    if (!currentFolderHandle) {
+      setNewFileHint('请先加载文件夹', true);
+      return;
+    }
+    const check = validateNewFileName(newFileName.value);
+    if (!check.ok) {
+      setNewFileHint(check.msg, true);
+      newFileName.focus();
+      return;
+    }
+    const fileName = check.name;
+
+    btnNewFileCreate.disabled = true;
+    setNewFileHint('创建中...', false);
+    try {
+      const handle = await currentFolderHandle.getFileHandle(fileName, { create: true });
+      const writable = await handle.createWritable();
+      await writable.write(newFileTemplate(fileName));
+      await writable.close();
+
+      closeNewFileDialog();
+      setStatus('已创建 ' + fileName, 'success');
+      await rescanAndOpen(fileName);
+    } catch (e) {
+      console.error(e);
+      setNewFileHint(describeWriteError(e, fileName), true);
+    } finally {
+      btnNewFileCreate.disabled = false;
+    }
+  }
+
+  btnNewFile.addEventListener('click', openNewFileDialog);
+  btnNewFileCancel.addEventListener('click', closeNewFileDialog);
+  btnNewFileCreate.addEventListener('click', createNewFile);
+
+  newFileName.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      createNewFile();
+    } else if (e.key === 'Escape') {
+      e.stopPropagation();
+      closeNewFileDialog();
+    }
+  });
+
+  // 点弹窗外的遮罩关闭（点弹窗内部不关）
+  newFileModal.addEventListener('mousedown', (e) => {
+    if (e.target === newFileModal) closeNewFileDialog();
+  });
 
   btnRefresh.addEventListener('click', refreshCurrentFile);
 
