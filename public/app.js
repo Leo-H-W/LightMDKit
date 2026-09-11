@@ -560,8 +560,10 @@
     const blocks = [];
     for (let i = 0; i < lineCount; i++) {
       if (!isRow(i) || !(i + 1 < lineCount) || fence[i + 1] || !TABLE_SEP_RE.test(cmEditor.getLine(i + 1))) continue;
+      // 数据行到下一个分隔行为止。必须在这里停：分隔行标志着一张表的数据区结束，
+      // 继续往下会把下一张表的表头也吞进来（两张表紧邻时尤其明显）。
       let end = i + 2;
-      while (isRow(end)) end++;
+      while (end < lineCount && isRow(end) && !fence[end] && !TABLE_SEP_RE.test(cmEditor.getLine(end))) end++;
       blocks.push({ from: i, to: end - 1, sep: i + 1 });
       i = end - 1;
     }
@@ -666,16 +668,25 @@
 
     if (!isRow(pos.line)) return CodeMirror.Pass;
 
-    // 向上、向下扩出包含光标行的表格块
-    let from = pos.line;
-    while (from > 0 && (isRow(from - 1) || isSep(from - 1))) from--;
-    let to = pos.line;
-    while (to + 1 < lineCount && isRow(to + 1)) to++;
-
-    // 块里必须有分隔行，才认定这是一张表（避免把普通含 | 的段落当成表格）
+    // 找出「光标所在这张表」的分隔行 —— 关键是遇到分隔行就停，
+    // 不能一路向上找第一个分隔行：两张表紧邻（中间没有空行）时，那样会拿到
+    // 上一张表的分隔行，新增行就会按上一张表的列数生成（实测 4 列表格新增出 3 列）。
     let sep = -1;
-    for (let n = from; n <= to; n++) if (isSep(n)) { sep = n; break; }
+    if (isSep(pos.line)) {
+      sep = pos.line;                                        // 光标就在分隔行上
+    } else if (pos.line + 1 < lineCount && isSep(pos.line + 1)) {
+      sep = pos.line + 1;                                    // 光标在表头行
+    } else {
+      // 光标在数据行：向上走，直到上方就是本表的分隔行
+      let n = pos.line;
+      while (n - 1 >= 0 && isRow(n - 1) && !isSep(n - 1)) n--;
+      if (n - 1 >= 0 && isSep(n - 1)) sep = n - 1;
+    }
     if (sep === -1) return CodeMirror.Pass;
+
+    // 本表数据区的最后一行：从分隔行往下，遇到下一个分隔行就停
+    let to = sep;
+    while (to + 1 < lineCount && isRow(to + 1) && !isSep(to + 1)) to++;
 
     const cols = pipePositions(cm.getLine(sep)).length - 1;
     if (cols < 1) return CodeMirror.Pass;
