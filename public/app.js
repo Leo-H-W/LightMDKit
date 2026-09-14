@@ -878,7 +878,7 @@
 
     let to = sep;                                        // 数据区最后一行：遇到下一个分隔行就停
     while (to + 1 < t.lineCount && t.isRow(to + 1) && !t.isSep(to + 1)) to++;
-    // 把行判定也带上：tableCols / appendTableRow 拿到这个对象后还要按行判断，
+    // 把行判定也带上：tableCols / insertTableRow 拿到这个对象后还要按行判断，
     // 挂在对象上比一路透传参数省事，也不会有「t 到底是判定器还是表格」的歧义。
     return { sep, header: sep - 1, to, isRow: t.isRow, isSep: t.isSep, lineCount: t.lineCount };
   }
@@ -922,25 +922,41 @@
     cm.setCursor({ line, ch });
   }
 
-  // 在表格末尾追加一行空单元格，光标落到第 col 格
-  function appendTableRow(cm, t, col) {
+  // 在第 afterLine 行之后插入一行空单元格，光标落到第 col 格。
+  // Enter 走到最后一行时用它（afterLine = 表格末行），Tab 在行尾时也用它。
+  function insertTableRow(cm, t, afterLine, col) {
     const cols = tableCols(cm, t);
     if (cols < 1) return false;
     const newRow = '|' + new Array(cols).fill('   ').join('|') + '|';
-    cm.replaceRange('\n' + newRow, { line: t.to, ch: cm.getLine(t.to).length });
-    moveToTableCell(cm, t.to + 1, Math.min(col, cols - 1));
+    cm.replaceRange('\n' + newRow, { line: afterLine, ch: cm.getLine(afterLine).length });
+    moveToTableCell(cm, afterLine + 1, Math.min(col, cols - 1));
     return true;
   }
 
-  // Tab：表格里新增一行（Typora 习惯）。不在表格里时交回默认缩进行为。
+  // Tab：在格子里往右跳一格；已经在本行最后一格，就在**本行之后**插入一行
+  // （Typora 习惯）。不在表格里时交回默认的缩进行为。
+  //
+  // 原来是不管光标在哪一格都往表格末尾追加一行，两个毛病：在中间格按也会多一行，
+  // 新增的行还跑到表尾去（实测在第 3 行按，行插到了第 10 行后面）。
   function tableTabKey(cm) {
     const t = tableLineTesters(cm);
     const table = findTableAtCursor(cm, t);
     if (!table) return CodeMirror.Pass;
-    return appendTableRow(cm, table, 0) ? null : CodeMirror.Pass;
+    const pos = cm.getCursor();
+    const cell = tableCellAt(cm, pos.line, pos.ch);
+    if (!cell) return CodeMirror.Pass;
+    const lastCell = pipePositions(cm.getLine(pos.line)).length - 2;   // 本行最后一格的序号
+    if (cell.index < lastCell) {
+      moveToTableCell(cm, pos.line, cell.index + 1);
+      return null;
+    }
+    // 本行的「下一行」：表头行与分隔行的下一行是第一条数据行，插入点得落到分隔行
+    // 之后 —— 插在表头后面会把分隔行挤到新行下面，表格就不再是表格了。
+    const after = pos.line <= table.sep ? table.sep : pos.line;
+    return insertTableRow(cm, table, after, 0) ? null : CodeMirror.Pass;
   }
 
-  // Enter：跳到下一行的同一格；已在最后一行则先追加一行再跳过去（与 Tab 一致）。
+  // Enter：跳到下一行的同一格；已在最后一行，就在它后面插入一行再跳过去。
   // 不在表格里时必须显式转交给「列表续行」命令 —— Enter 已被本函数接管，
   // 直接返回 Pass 的话正文里按回车就不会续行列表了。
   function tableEnterKey(cm) {
@@ -962,7 +978,7 @@
       moveToTableCell(cm, next, cell.index);
       return null;
     }
-    return appendTableRow(cm, table, cell.index) ? null : fallback();
+    return insertTableRow(cm, table, table.to, cell.index) ? null : fallback();
   }
 
   // Ctrl+Enter：单元格内换行 —— 插入字面量 `<br>`。
