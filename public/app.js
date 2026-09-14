@@ -2581,6 +2581,7 @@
   function applyAutosaveButton() {
     if (!btnAutosave) return;
     btnAutosave.classList.toggle('active', autosaveOn);
+    btnAutosave.setAttribute('aria-checked', autosaveOn ? 'true' : 'false');
     btnAutosave.title = autosaveOn
       ? '自动保存：已开启（停止编辑 5 秒后写盘；点击关闭）'
       : '自动保存：已关闭（点击开启）';

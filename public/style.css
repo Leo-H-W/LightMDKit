@@ -68,14 +68,57 @@ html, body {
   background: #e6eaef;
 }
 
-/* 开关型按钮的「已开启」状态（目前是顶栏的「自动保存」） */
-.btn.active {
-  background: #ddf4ff;
+/* 滑动开关（顶栏「自动保存」）：轨道 + 滑块，右侧带文字标签。
+   尺寸对齐旁边的 .btn（padding 6px / 13px / line-height 20px，整体 34px 高）。 */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  color: #24292f;
+  background: #ffffff;
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.switch:hover {
+  background: #f6f8fa;
+}
+.switch-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+  border-radius: 10px;
+  background: #c8d1da;
+  transition: background 0.15s;
+}
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(31, 35, 40, .25);
+  transition: transform 0.15s ease;
+}
+.switch.active {
   border-color: #0969da;
   color: #0969da;
 }
-.btn.active:hover {
-  background: #cdeaff;
+.switch.active .switch-track {
+  background: #0969da;
+}
+.switch.active .switch-knob {
+  transform: translateX(14px);
 }
 
 .btn:disabled {

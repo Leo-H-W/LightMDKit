@@ -110,6 +110,17 @@ const type = async (s, gap = 120) => {
   return page.evaluate(() => performance.now());
 };
 const btnActive = () => page.evaluate(() => document.getElementById('btn-autosave').classList.contains('active'));
+// 滑动开关的外观：滑块位移 + 轨道底色（关=灰/左，开=蓝/右）
+const switchVisual = () => page.evaluate(() => {
+  const b = document.getElementById('btn-autosave');
+  const knob = b.querySelector('.switch-knob');
+  const track = b.querySelector('.switch-track');
+  return {
+    knob: getComputedStyle(knob).transform,
+    track: getComputedStyle(track).backgroundColor,
+    aria: b.getAttribute('aria-checked'),
+  };
+});
 
 // 打开文件（走应用自己的「加载文件夹」流程，系统弹窗已被替换）
 const openFile = async () => {
@@ -142,6 +153,13 @@ await clearWrites();
 await page.click('#btn-autosave');
 await page.waitForTimeout(200);
 check('S3', '点击后按钮变为开启态', (await btnActive()) === true);
+{
+  const v = await switchVisual();
+  const slid = v.knob === 'none' || v.knob.includes('0, 0, 0, 0') ? false : true;
+  check('S3', '滑动开关：滑块右移、轨道变蓝、aria 为 true',
+    slid && v.track === 'rgb(9, 105, 218)' && v.aria === 'true',
+    `滑块 ${v.knob} / 轨道 ${v.track} / aria ${v.aria}`);
+}
 await page.waitForTimeout(6500);
 let w = await writes();
 check('S3', '开启后把已有改动排上并写一次', w.length === 1, `${w.length} 次`);
@@ -183,6 +201,13 @@ check('A4', '改了又改回去 → 不写', w.length === 0, `${w.length} 次`);
 await page.click('#btn-autosave');
 await page.waitForTimeout(200);
 check('S4', '再点一下恢复未开启态', (await btnActive()) === false);
+{
+  const v = await switchVisual();
+  const back = v.knob === 'none' || v.knob.includes('0, 0, 0, 0');
+  check('S4', '滑动开关：滑块回到左侧、轨道回到灰色、aria 为 false',
+    back && v.track === 'rgb(200, 209, 218)' && v.aria === 'false',
+    `滑块 ${v.knob} / 轨道 ${v.track} / aria ${v.aria}`);
+}
 await clearWrites();
 await type('W');
 await page.waitForTimeout(8000);
