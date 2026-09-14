@@ -724,6 +724,11 @@ html {
     Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
   font-size: 16px;
   line-height: 1.7;
+  /* 一个单元格盒子的高度 = 行高 + 上下内边距(4px×2) + 上下边框(1px×2)。
+     含 <br> 的表格行要把格子逐行摞起来、并给整行定高，都按这个值算
+     （见下面「单元格里的换行」一节）。改行高或 .cm-tbl-cell 的内边距/边框，
+     这里必须跟着改，否则格子会错位。 */
+  --cm-tbl-cellh: calc(1.7em + 10px);
 }
 
 /*
@@ -877,13 +882,59 @@ html {
   color: #59636e;
 }
 
-/* 单元格里的 <br>：编辑器里不渲染成真换行（那会劈开单元格盒子，见 app.js 说明），
-   只把它弱化成一个小标记，提示这里有换行；真换行在预览端由 marked 渲染。 */
+/* ============================================================
+   单元格里的换行（<br>）
+
+   一格里的 <br> 要渲染成真的换行：格子变高，同一行的其它格子原地不动。
+   做法见 app.js 的 markMultilineRow —— 含 <br> 的行整行改成绝对定位：
+   每格按 <br> 切成若干「段」，一段一个盒子，按 (列, 段) 摆放，行高由行上的
+   .cm-tbl-mline<行数> 给定（绝对定位的盒子不占位，没法定高）。
+
+   之所以绕开文档流：段与段之间要断行，而段是同一格切出来的兄弟节点，
+   中间没有共同的父盒子。文档流里的断行会把同一行后面的格子一起带到下一行，
+   表现为「换行没生效、后面的格子被挤走」。
+   ============================================================ */
+
+/* 行的定位基准：绝对定位的盒子以这一行为参照 */
+.live-preview .CodeMirror-line.cm-tbl-mline {
+  position: relative;
+}
+
+/* 含换行的行里，格子与 <br> 都脱离文档流，由类的几何量各自落位 */
+.live-preview .CodeMirror-line .cm-tbl-abs {
+  position: absolute;
+}
+
+/* 选择器带上 .cm-tbl-cell 是为了压过 .cm-tbl-cell:not(.cm-tbl-c0) 的
+   -1px 负外边距：绝对定位按「外边距盒」落位，那 1px 会把盒子整体挪偏
+   （列的 left 里已经单独算过这份偏移，这里必须清零）。 */
+.live-preview .CodeMirror-line .cm-tbl-cell.cm-tbl-abs {
+  margin: 0;
+  /* 高度写死：段里可能只有空格（行盒会塌成 0），不写死盒子就会矮一截，
+     叠起来会在段与段之间漏缝（实测「lead<br> 」那格最后一段只有 10px 高）。 */
+  height: var(--cm-tbl-cellh);
+  /* 横线只画在整格的最外两条边上：段是叠着的，内部再画就成了格中格 */
+  border-top-width: 0;
+  border-bottom-width: 0;
+  /* 不画边框的那一侧补回 1px 内边距，让每段的文字都从盒子顶边下 5px 开始，
+     边框 + 内边距 = 5px，段与段之间的文字才在同一水平线上 */
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.live-preview .CodeMirror-line .cm-tbl-cell.cm-tbl-top { border-top-width: 1px; padding-top: 4px; }
+.live-preview .CodeMirror-line .cm-tbl-cell.cm-tbl-bottom { border-bottom-width: 1px; padding-bottom: 4px; }
+
+/* 只有一段的格子：撑满整行，与旁边换行的那格一样高 */
+.live-preview .CodeMirror-line .cm-tbl-cell.cm-tbl-full { height: 100%; }
+
+/* 空行（相邻两个 <br>）：由就近那个 <br> 顶格子的外形，里面的字面量 <br> 藏掉 */
+.live-preview .CodeMirror-line .cm-tbl-gap { color: transparent; }
+
+/* 不占位的 <br>：后面跟着有内容的段，换行由那段自己完成，它只需隐形。
+   只透明、不缩字号 —— 它自己也是绝对定位的盒子，left/top 用的是 em，
+   改字号会让这些长度按 1px 的字号去算，位置全错（实测偏到行首上方）。 */
 .live-preview .CodeMirror-line .cm-tbl-br {
-  font-size: 11px;
-  color: #8c959f;
-  background: rgba(129, 139, 152, 0.12);
-  border-radius: 3px;
+  color: transparent;
 }
 
 /*

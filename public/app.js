@@ -519,6 +519,11 @@
   function dropTableBlock(b) {
     for (const m of b.marks) m.clear();
     b.marks = [];
+    // 含换行的行带着行级类名（相对定位 + 行高），清理时一并摘掉
+    if (cmEditor) {
+      for (const [handle, cls] of b.rowClasses) cmEditor.removeLineClass(handle, 'text', cls);
+    }
+    b.rowClasses = [];
     if (b.sepHandle && cmEditor) {
       cmEditor.removeLineClass(b.sepHandle, 'text', 'cm-tbl-sep-line');
       cmEditor.removeLineClass(b.sepHandle, 'text', 'cm-tbl-sep-open');
@@ -605,6 +610,81 @@
 
   let lastTableSignature = '';
 
+  // 单元格的类名：列号决定宽度（含换行的行还决定 left），表头行多一个表头样式
+  function cellClass(p, head) {
+    return 'cm-tbl-cell ' + TABLE_COL_CLASS_PREFIX + p + (head ? ' cm-tbl-head' : '');
+  }
+
+  // 把单元格按 <br> 切成若干段 —— 一格里的一个「段」就是渲染后的一行。
+  // 返回 { pieces, brs }：pieces 是各段的字符区间（不含 <br> 本身），
+  // brs 是各 <br> 自身的区间。相邻两个 <br> 之间会得到一个空段（from === to），
+  // 它对应格子里的一空行，交给紧挨着它的那个 <br> 顶位（见 markMultilineRow）。
+  function splitCellPieces(text, start, end) {
+    const seg = text.slice(start, end);
+    const pieces = [], brs = [];
+    TABLE_BR_RE.lastIndex = 0;
+    let m, at = 0;
+    while ((m = TABLE_BR_RE.exec(seg)) !== null) {
+      pieces.push({ from: start + at, to: start + m.index });
+      brs.push({ from: start + m.index, to: start + m.index + m[0].length });
+      at = m.index + m[0].length;
+    }
+    pieces.push({ from: start + at, to: end });
+    return { pieces, brs };
+  }
+
+  // 含 <br> 的行：整行改成绝对定位（几何量见 style.css 的「单元格里的换行」）。
+  //
+  // 为什么不能在文档流里换行：一格切出来的段是彼此相邻的兄弟节点，中间没有
+  // 共同的父盒子，而换行只能由「块级兄弟」制造 —— 一旦这么断行，同一行里排在
+  // 后面的格子会被一起带到下一行（实测：换行那格被劈成一排盒子，后面的格子
+  // 整体右移）。绝对定位让每个盒子各自归位，列与行都不会被带偏。
+  //
+  // 每个盒子的三个几何量都由类名给（数值在 refreshTableMarks 里生成）：
+  //   .cm-tbl-c<p>      列的 left / width
+  //   .cm-tbl-seg<k>    第 k 段的 top
+  //   .cm-tbl-mline<k>  整行高度（盒子都不占位，行高只能自己定）
+  function markMultilineRow(b, n, cells, segs) {
+    const head = n === b.from;
+    const handle = cmEditor.getLineHandle(n);
+    for (const cls of ['cm-tbl-mline', 'cm-tbl-mline' + segs]) {
+      cmEditor.addLineClass(handle, 'text', cls);
+      b.rowClasses.push([handle, cls]);
+    }
+    for (const c of cells) {
+      const last = c.pieces.length - 1;
+      const base = cellClass(c.p, head) + ' cm-tbl-abs';
+      const used = new Set();     // 已被空段占用的 <br>：一个 <br> 只能顶一行
+      c.pieces.forEach((piece, k) => {
+        const cls = base + ' cm-tbl-seg' + k
+          + (k === 0 ? ' cm-tbl-top' : '')
+          + (k === last ? ' cm-tbl-bottom' : '')
+          + (last === 0 ? ' cm-tbl-full' : '');   // 只有一段：撑满整行
+        if (piece.to > piece.from) {
+          b.marks.push(cmEditor.markText({ line: n, ch: piece.from }, { line: n, ch: piece.to },
+            { className: cls }));
+          return;
+        }
+        // 空段没有文字可标，让就近那个 <br> 顶上（首段用它后面那个）
+        const br = k === 0 ? c.brs[0] : c.brs[k - 1];
+        if (!br || used.has(br)) return;
+        used.add(br);
+        b.marks.push(cmEditor.markText({ line: n, ch: br.from }, { line: n, ch: br.to },
+          { className: cls + ' cm-tbl-gap' }));
+      });
+      // 其余的 <br> 后面跟着有内容的段，换行由那段自己的盒子完成，这里只需隐形。
+      // 位置仍按「本列 + 下一段的段号」给：光标停在 <br> 里时落点就在那儿，
+      // 不给的话会落到行首去。
+      c.brs.forEach((br, j) => {
+        const next = c.pieces[j + 1];
+        if (!used.has(br) && next && next.to > next.from) {
+          b.marks.push(cmEditor.markText({ line: n, ch: br.from }, { line: n, ch: br.to },
+            { className: 'cm-tbl-abs ' + TABLE_COL_CLASS_PREFIX + c.p + ' cm-tbl-seg' + (j + 1) + ' cm-tbl-br' }));
+        }
+      });
+    }
+  }
+
   function refreshTableMarks() {
     if (currentMode !== 'modern' || !cmEditor) { clearTableMarks(); return; }
 
@@ -639,7 +719,7 @@
       if (old && old.sig === sigs[i]) { next.push(old); continue; }   // 复用
       if (old) dropTableBlock(old);                                   // 内容变了，先摘旧标注
       next.push({ sig: sigs[i], from: blocks[i].from, to: blocks[i].to, sep: blocks[i].sep,
-                  marks: [], sepHandle: null, dirty: true });
+                  marks: [], rowClasses: [], sepHandle: null, dirty: true });
     }
     for (let i = blocks.length; i < prev.length; i++) dropTableBlock(prev[i]);  // 表格被删掉了
     tableBlocks = next;
@@ -649,8 +729,9 @@
     for (const b of dirty) b.dirty = false;
 
 
-    // 统计每列宽度（取所有行里该列最宽的一个）
+    // 统计每列宽度（取所有行里该列最宽的一个），顺带记下最长的格子有几段（几行）
     const widths = [];
+    let maxSegs = 1;
     for (const b of blocks) {
       for (let n = b.from; n <= b.to; n++) {
         if (n === b.sep) continue;
@@ -659,8 +740,14 @@
         for (let p = 0; p + 1 < pipes.length; p++) {
           // 刻意不 trim：单元格区间含管道符两侧的空格，这些空格同样占宽度，
           // 按 trim 后算会让盒子偏窄、内容折行（实测表头被撑成两行）。
-          // <br> 会被渲染成换行、不占字符宽度，算列宽时先去掉，否则列会被撑宽。
-          const w = visualWidth(text.slice(pipes[p] + 1, pipes[p + 1]).replace(TABLE_BR_RE, ''));
+          // 含 <br> 的格子渲染出来是多行，宽度只由最长的那一段决定 ——
+          // 按整段算会把各行的宽度加在一起，列被撑宽（实测「1<br>dd<br>dd」撑到两倍宽）。
+          const { pieces } = splitCellPieces(text, pipes[p] + 1, pipes[p + 1]);
+          maxSegs = Math.max(maxSegs, pieces.length);
+          let w = 0;
+          for (const piece of pieces) {
+            w = Math.max(w, visualWidth(text.slice(piece.from, piece.to)));
+          }
           widths[p] = Math.max(widths[p] || 0, w);
         }
       }
@@ -678,9 +765,32 @@
     // 再加 1.4em 覆盖左右内边距（各 0.5em）与边框、留一点余量。
     // 只有宽度真的变了才写回：重写 <style> 会触发整页样式重算，是这条路径上
     // 最贵的一步，不能每次刷新都做。
-    const css = widths
-      .map((w, n) => `.live-preview .${TABLE_COL_CLASS_PREFIX}${n}{width:${(w * 0.5 + 1.4).toFixed(2)}em}`)
-      .join('\n');
+    //
+    // 含换行的行是绝对定位，除了宽度还得给三个几何量（数值取自实测）：
+    //   .cm-tbl-c<p>      左边界：基准是行的内边距盒（CodeMirror 给 .CodeMirror-line
+    //                     0 4px 内边距，所以先加 0.25em），再累加左边的列宽；
+    //                     每往右一列还要减去 1px —— 文档流里
+    //                     .cm-tbl-cell:not(.cm-tbl-c0) 有 -1px 的负外边距，
+    //                     让相邻格子的 1px 边框重叠成一条（实测 c0/c1/c2 =
+    //                     304 / 397.39 / 466.78，正是各减 1px）。
+    //   .cm-tbl-seg<k>    第 k 段的 top：每段就是格子里的第 k 行。
+    //   .cm-tbl-mline<k>  行高：绝对定位的盒子不占位，整行高度得自己给。
+    const rules = [];
+    let left = 0.25;
+    for (let p = 0; p < widths.length; p++) {
+      const wEm = (widths[p] || 0) * 0.5 + 1.4;
+      if (p) left -= 0.0625;
+      rules.push(`.live-preview .${TABLE_COL_CLASS_PREFIX}${p}{width:${wEm.toFixed(2)}em;left:${left.toFixed(2)}em}`);
+      left += wEm;
+    }
+    for (let k = 1; k <= maxSegs; k++) {
+      rules.push(`.live-preview .cm-tbl-seg${k}{top:calc(${k} * var(--cm-tbl-cellh))}`);
+    }
+    for (let k = 2; k <= maxSegs; k++) {
+      rules.push(`.live-preview .CodeMirror-line.cm-tbl-mline${k}` +
+        `{height:calc(${k} * var(--cm-tbl-cellh)) !important}`);
+    }
+    const css = rules.join('\n');
     if (st.textContent !== css) st.textContent = css;
 
     // 只给需要重建的块打标注；复用中的块由 CodeMirror 自己维护标注位置
@@ -704,26 +814,22 @@
           b.marks.push(cmEditor.markText({ line: n, ch: pos }, { line: n, ch: pos + 1 },
             { className: 'cm-tbl-pipe' }));
         });
-        for (let p = 0; p + 1 < pipes.length; p++) {
-          const cellStart = pipes[p] + 1;
-          const cellEnd = pipes[p + 1];
-          b.marks.push(cmEditor.markText(
-            { line: n, ch: cellStart }, { line: n, ch: cellEnd },
-            { className: 'cm-tbl-cell ' + TABLE_COL_CLASS_PREFIX + p + (n === b.from ? ' cm-tbl-head' : '') }));
 
-          // 单元格里的 <br> 只做弱化提示，不在这里渲染成真换行。
-          // 试过用 replacedWith 换成 <br> 节点：那个标记与上面的单元格标记**重叠**，
-          // 而 CodeMirror 会把重叠的标记拆成相邻 span —— 单元格被劈成两个盒子
-          // （实测 3 列的表格渲染成 4 格）。真换行交给预览端 marked 处理。
-          const seg = cmEditor.getLine(n).slice(cellStart, cellEnd);
-          TABLE_BR_RE.lastIndex = 0;
-          let bm;
-          while ((bm = TABLE_BR_RE.exec(seg)) !== null) {
-            const at = cellStart + bm.index;
-            b.marks.push(cmEditor.markText(
-              { line: n, ch: at }, { line: n, ch: at + bm[0].length },
-              { className: 'cm-tbl-br' }));
-          }
+        // 每格先按 <br> 切成段：段数 > 1 的行改用绝对定位渲染，其余照旧走文档流
+        const cells = [];
+        for (let p = 0; p + 1 < pipes.length; p++) {
+          const from = pipes[p] + 1, to = pipes[p + 1];
+          cells.push(Object.assign({ p, from, to }, splitCellPieces(text, from, to)));
+        }
+        const segs = Math.max(1, ...cells.map((c) => c.pieces.length));
+        if (segs > 1) {
+          markMultilineRow(b, n, cells, segs);
+          continue;
+        }
+        for (const c of cells) {
+          b.marks.push(cmEditor.markText(
+            { line: n, ch: c.from }, { line: n, ch: c.to },
+            { className: cellClass(c.p, n === b.from) }));
         }
       }
     }
@@ -917,16 +1023,25 @@
     if (text === undefined) return null;
     const pipes = pipePositions(text);
 
+    // 含 <br> 的格子在 DOM 里是多个盒子（一段一个），所以按列号取这一列的全部盒子，
+    // 先用横坐标定列、再用纵坐标定是哪一段。单行格子只有一段，行为与从前一致。
+    // 只要格子（.cm-tbl-cell）：不占位的 <br> 也带着列号类，会把段号数乱。
     for (let p = 0; p + 1 < pipes.length; p++) {
-      const el = cells[p];
-      if (!el) continue;
-      const r = el.getBoundingClientRect();
-      if (e.clientX < r.left || e.clientX > r.right) continue;
+      const boxes = [...lineEl.querySelectorAll('.cm-tbl-c' + p + '.cm-tbl-cell')];
+      if (!boxes.length) continue;
+      const first = boxes[0].getBoundingClientRect();
+      if (e.clientX < first.left || e.clientX > first.right) continue;
+      const box = boxes.find((el) => {
+        const r = el.getBoundingClientRect();
+        return e.clientY >= r.top && e.clientY <= r.bottom;
+      }) || boxes[0];
+      const { pieces } = splitCellPieces(text, pipes[p] + 1, pipes[p + 1]);
+      const piece = pieces[Math.min(Math.max(boxes.indexOf(box), 0), pieces.length - 1)];
       const pad = 8;                    // 与 style.css 里 .cm-tbl-cell 的左右内边距一致
+      const r = box.getBoundingClientRect();
       const inner = Math.max(1, r.width - pad * 2);
       const frac = Math.min(1, Math.max(0, (e.clientX - (r.left + pad)) / inner));
-      const start = pipes[p] + 1;
-      return { line, ch: start + Math.round(frac * (pipes[p + 1] - start)) };
+      return { line, ch: piece.from + Math.round(frac * (piece.to - piece.from)) };
     }
     return null;
   }
@@ -1627,6 +1742,10 @@
       cmEditor.setOption('lineNumbers', !isModern);
       // 当前行高亮只在现代模式开，传统模式保持原样（见构造处的说明）
       cmEditor.setOption('styleActiveLine', isModern);
+      // 光标按「字符实际高度」画。默认（true）是把光标画成整行高，而含 <br> 的
+      // 表格行有 2 行以上那么高，光标会变成一根贯穿整行的竖条（实测 74px 高）。
+      // 关掉之后光标取字符自身的矩形，落在哪一段就画在哪一段上。
+      cmEditor.setOption('singleCursorHeightPerLine', !isModern);
       // 列表续行 / 表格 Tab 只在现代模式生效，传统模式清空以恢复默认按键
       cmEditor.setOption('extraKeys', isModern ? MODERN_EXTRA_KEYS : {});
       if (editorVisible) cmEditor.refresh();
