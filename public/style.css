@@ -68,6 +68,16 @@ html, body {
   background: #e6eaef;
 }
 
+/* 开关型按钮的「已开启」状态（目前是顶栏的「自动保存」） */
+.btn.active {
+  background: #ddf4ff;
+  border-color: #0969da;
+  color: #0969da;
+}
+.btn.active:hover {
+  background: #cdeaff;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;

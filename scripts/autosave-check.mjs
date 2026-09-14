@@ -1,5 +1,5 @@
 /**
- * 校验自动保存的时机（对应 checklist.md 的 A1–A5）。
+ * 校验「自动保存开关」与自动保存的时机（对应 checklist.md 的 S1–S6 / A1–A5）。
  *
  *   node server.js                     # 先让 http://localhost:3456 跑起来
  *   node scripts/autosave-check.mjs    # 全项通过退出码 0
@@ -68,13 +68,13 @@ const INIT_DOC = [
   '|衡阳 |你好|哈哈|',
 ].join('\n');
 
-
 const browser = await launchChromium();
 const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
 const page = await ctx.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
 
+// 假目录：读取给内容，写入只记账（不碰磁盘）
 await page.addInitScript((init) => {
   window.__writes = [];
   const state = { content: init };
@@ -101,71 +101,113 @@ await page.addInitScript((init) => {
   window.showDirectoryPicker = async () => dirHandle;
 }, INIT_DOC);
 
-await page.goto(BASE, { waitUntil: 'load' });
-await page.click('#btn-load-folder');          // 走应用自己的加载流程（系统弹窗已被替换）
-await page.waitForTimeout(1200);
-if ((await page.textContent('#btn-mode')).trim() === '现代模式') {
-  await page.click('#btn-mode');
-  await page.waitForTimeout(1000);
-}
 const CM = 'document.querySelector(".CodeMirror").CodeMirror';
-const mode = await page.evaluate(() => {
-  const c = document.querySelector('.CodeMirror');
-  return c && c.className.includes('live-preview') ? 'modern' : 'other';
-});
-if (mode !== 'modern') {
-  console.error('没进到现代模式，先检查页面');
-  await browser.close();
-  process.exit(1);
-}
-
 const writes = () => page.evaluate(() => window.__writes.map((w) => ({ t: Math.round(w.at), text: w.text })));
+const clearWrites = () => page.evaluate(() => { window.__writes = []; });
 const type = async (s, gap = 120) => {
   await page.evaluate(`(() => ${CM}.focus())()`);
   for (const ch of s) { await page.keyboard.type(ch); await page.waitForTimeout(gap); }
   return page.evaluate(() => performance.now());
 };
+const btnActive = () => page.evaluate(() => document.getElementById('btn-autosave').classList.contains('active'));
 
-// A1：没有改动就不该有任何写入（旧实现是每 3 秒无条件整篇重写）
+// 打开文件（走应用自己的「加载文件夹」流程，系统弹窗已被替换）
+const openFile = async () => {
+  await page.click('#btn-load-folder');
+  await page.waitForTimeout(1200);
+  if ((await page.textContent('#btn-mode')).trim() === '现代模式') {
+    await page.click('#btn-mode');            // 切到现代模式（常驻编辑态）
+    await page.waitForTimeout(1000);
+  }
+};
+await page.goto(BASE, { waitUntil: 'load' });
+await openFile();
+const mode = await page.evaluate(() => {
+  const c = document.querySelector('.CodeMirror');
+  return c && c.className.includes('live-preview') ? 'modern' : 'other';
+});
+if (mode !== 'modern') { console.error('没进到现代模式，先检查页面'); await browser.close(); process.exit(1); }
+
+// ---------- S1–S2：默认关闭，关着就不写 ----------
+check('S1', '默认关闭：按钮不是开启态', (await btnActive()) === false);
+await clearWrites();
 await page.waitForTimeout(8000);
-let w = await writes();
-check('A1', '无改动时 8 秒内零写入', w.length === 0, `${w.length} 次`);
+check('S2', '关闭状态下不输入：8 秒零写入', (await writes()).length === 0, `${(await writes()).length} 次`);
+await type('X');
+await page.waitForTimeout(8000);
+check('S2', '关闭状态下编辑：同样零写入', (await writes()).length === 0, `${(await writes()).length} 次`);
 
-// A2：改一次 → 静止 5 秒才写，且只写一次
-const t0 = await type('X');
+// ---------- S3：打开开关后才开始自动保存 ----------
+await clearWrites();
+await page.click('#btn-autosave');
+await page.waitForTimeout(200);
+check('S3', '点击后按钮变为开启态', (await btnActive()) === true);
+await page.waitForTimeout(6500);
+let w = await writes();
+check('S3', '开启后把已有改动排上并写一次', w.length === 1, `${w.length} 次`);
+check('S3', '写进去的是开启前的改动（含 X）', !!w[0] && w[0].text.includes('X'), '');
+
+// ---------- A1：开了也不做无条件写入 ----------
+await clearWrites();
+await page.waitForTimeout(8000);
+check('A1', '开启后无改动：8 秒零写入', (await writes()).length === 0, `${(await writes()).length} 次`);
+
+// ---------- A2/A3：静止 5 秒才写一次 ----------
+await clearWrites();
+const t0 = await type('Y');
 await page.waitForTimeout(3000);
 w = await writes();
 check('A2', '改动后 3 秒内不写（等静止）', w.length === 0, `${w.length} 次`);
 await page.waitForTimeout(3500);
 w = await writes();
 check('A2', '静止约 5 秒后写恰好一次', w.length === 1, `${w.length} 次`);
-check('A3', '写进去的是改动后的内容', !!w[0] && w[0].text.includes('X'),
+check('A3', '写进去的是改动后的内容', !!w[0] && w[0].text.includes('Y'),
   w[0] ? `写于 +${Math.round(w[0].t - t0)}ms` : '没有写入');
 
-// A4：连续改多次 → 只在最后一次之后写一次
-const before = w.length;
+// ---------- A4：连续输入只写一次；改了又改回去不写 ----------
+await clearWrites();
 await type('ABC');
 await page.waitForTimeout(6500);
 w = await writes();
-check('A4', '连续改动只在静止后写一次', w.length === before + 1, `${w.length - before} 次`);
+check('A4', '连续改动只在静止后写一次', w.length === 1, `${w.length} 次`);
 
-// A4b：改了又改回去 → 不写
-const beforeRevert = w.length;
 const saved = await page.evaluate(`(() => ${CM}.getValue())()`);
+await clearWrites();
 await type('Z');
 await page.evaluate(`(() => { const c = ${CM}; c.setValue(${JSON.stringify(saved)}); })()`);
 await page.waitForTimeout(6500);
 w = await writes();
-check('A4', '改了又改回去 → 不写', w.length === beforeRevert, `${w.length - beforeRevert} 次`);
+check('A4', '改了又改回去 → 不写', w.length === 0, `${w.length} 次`);
 
-// A5：带着未保存的改动切走 → 兜底保存，不丢内容
-const beforeSwitch = w.length;
-await type('Q');
-await page.click('#btn-mode');
+// ---------- S4：关掉开关立刻停止自动写盘 ----------
+await page.click('#btn-autosave');
+await page.waitForTimeout(200);
+check('S4', '再点一下恢复未开启态', (await btnActive()) === false);
+await clearWrites();
+await type('W');
+await page.waitForTimeout(8000);
+check('S4', '关闭后编辑不再自动写盘', (await writes()).length === 0, `${(await writes()).length} 次`);
+
+// ---------- A5：关着时切模式仍然显式保存（用户主动动作，不丢内容）----------
+await clearWrites();
+await page.click('#btn-mode');                 // 切回传统模式，内部会显式 saveCurrentFile
 await page.waitForTimeout(1500);
 w = await writes();
-check('A5', '切模式时兜底保存一次', w.length === beforeSwitch + 1, `${w.length - beforeSwitch} 次`);
-check('A5', '兜底保存的内容含最后一次改动', !!w[w.length - 1] && w[w.length - 1].text.includes('Q'), '');
+check('A5', '切模式时兜底保存一次', w.length === 1, `${w.length} 次`);
+check('A5', '兜底保存的内容含最后一次改动（W）', !!w[0] && w[0].text.includes('W'), '');
+
+// ---------- S5：开关状态记在浏览器本地，重开页面仍生效 ----------
+await page.click('#btn-autosave');             // 打开
+await page.waitForTimeout(300);
+await page.reload({ waitUntil: 'load' });
+await page.waitForTimeout(500);
+check('S5', '重开页面后开关仍为开启态', (await btnActive()) === true);
+await clearWrites();
+await openFile();
+await type('V');
+await page.waitForTimeout(6500);
+w = await writes();
+check('S5', '重开后自动保存照常工作', w.length === 1 && !!w[0] && w[0].text.includes('V'), `${w.length} 次`);
 
 console.log('写入时间线：' + (await writes()).map((x, i) => `#${i + 1} +${x.t}ms(${x.text.length}字节)`).join('  '));
 const failed = summary();

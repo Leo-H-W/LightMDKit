@@ -14,6 +14,7 @@
   const resizeHandle = document.querySelector('.resize-handle');
   const dropOverlay = document.getElementById('drop-overlay');
   const btnMode = document.getElementById('btn-mode');
+  const btnAutosave = document.getElementById('btn-autosave');
   const btnViewFiles = document.getElementById('btn-view-files');
   const btnViewToc = document.getElementById('btn-view-toc');
   const filePanel = document.getElementById('file-panel');
@@ -100,6 +101,26 @@
   let autosaveTimer = null;
   let lastSavedText = null;
   const AUTOSAVE_IDLE_MS = 5000;
+  // 自动保存开关：**默认关闭**，只有顶栏那个按钮打开后才写盘。偏好记在浏览器本地
+  const AUTOSAVE_STORAGE_KEY = 'lightmdkit.autosave';
+  let autosaveOn = loadAutosavePreference();
+
+  function loadAutosavePreference() {
+    try {
+      return localStorage.getItem(AUTOSAVE_STORAGE_KEY) === 'on';
+    } catch (e) {
+      // 隐私模式/禁用存储时 localStorage 会抛异常，按默认（关闭）
+      return false;
+    }
+  }
+
+  function saveAutosavePreference() {
+    try {
+      localStorage.setItem(AUTOSAVE_STORAGE_KEY, autosaveOn ? 'on' : 'off');
+    } catch (e) {
+      // 存不下不影响本次使用
+    }
+  }
   // 记录切换模式前视口最上方的 heading id，用于切回浏览模式时恢复滚动位置
   let lastViewHeadingId = null;
   // 文件浏览历史栈，用于链接跳转后返回
@@ -2006,6 +2027,7 @@
   // 排一次自动保存：从现在起静止 AUTOSAVE_IDLE_MS 内没有新改动才真写。
   // 每有改动就重新计时，所以连续打字期间一次都不会写，停下来 5 秒才落一次盘。
   function scheduleAutosave() {
+    if (!autosaveOn) return;                 // 开关关着就一次都不排（默认关）
     if (!isEditMode || !currentFile) return;
     if (autosaveTimer) clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(() => {
@@ -2549,10 +2571,37 @@
   // 页面要走了（关标签 / 刷新）：尽力把还没排完的那次改动写下去。
   // 异步写不一定来得及完成，但比直接丢掉好；真正的兜底仍是离开编辑态时的显式保存。
   window.addEventListener('pagehide', () => {
-    if (!isEditMode || !currentFile) return;
+    if (!autosaveOn || !isEditMode || !currentFile) return;
     const now = cmEditor ? cmEditor.getValue() : editorEl.value;
     if (now !== lastSavedText) saveCurrentFile(true).catch(() => {});
   });
+
+  // 自动保存开关：默认关闭。关着时不做任何自动写盘；切模式 / 点「浏览」时的显式
+  // 保存不受影响（那是用户主动的动作，不是自动保存）。
+  function applyAutosaveButton() {
+    if (!btnAutosave) return;
+    btnAutosave.classList.toggle('active', autosaveOn);
+    btnAutosave.title = autosaveOn
+      ? '自动保存：已开启（停止编辑 5 秒后写盘；点击关闭）'
+      : '自动保存：已关闭（点击开启）';
+  }
+
+  if (btnAutosave) {
+    btnAutosave.addEventListener('click', () => {
+      autosaveOn = !autosaveOn;
+      saveAutosavePreference();
+      applyAutosaveButton();
+      if (autosaveOn) {
+        // 打开时顺手把当前还没保存的改动排上，不必再敲一个字符才触发
+        scheduleAutosave();
+        setStatus('自动保存已开启：停止编辑 5 秒后写盘', 'success');
+      } else {
+        stopAutosave();   // 撤掉已经排期的那一次
+        setStatus('自动保存已关闭：不再自动写盘');
+      }
+    });
+    applyAutosaveButton();
+  }
 
   if (btnLoadFolder) {
     btnLoadFolder.addEventListener('click', selectFolder);
