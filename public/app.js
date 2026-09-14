@@ -155,7 +155,8 @@
     cmEditor.on('cursorActivity', () => {
       if (currentMode !== 'modern') return;
       updateActiveTocItemByCursor();
-      updateSepReveal();   // 光标进入表头行时分隔行要展开
+      updateSepReveal();        // 光标进入表头行时分隔行要展开
+      updateActiveTableRow();   // 数据行右侧的「…」按钮按它显隐
     });
 
     bindTableClickFix();   // 修正表格行里鼠标点击的光标落点
@@ -559,6 +560,7 @@
     tableBlocks = [];
     // 清掉整体签名，避免下次因为「签名没变」跳过重建、留下已被清空的标注
     lastTableSignature = '';
+    clearActiveTableRow();   // 「…」按钮的高亮状态（离开现代模式时也要收掉）
   }
 
   // 整篇替换文档（cmEditor.setValue）之前必须调一次。
@@ -775,11 +777,15 @@
     //                     304 / 397.39 / 466.78，正是各减 1px）。
     //   .cm-tbl-seg<k>    第 k 段的 top：每段就是格子里的第 k 行。
     //   .cm-tbl-mline<k>  行高：绝对定位的盒子不占位，整行高度得自己给。
+    // colLeft / colWidthEm 存下同一套数值：行末的「…」按钮要按它定位到最后一格右侧
     const rules = [];
+    const colLeft = [], colWidthEm = [];
     let left = 0.25;
     for (let p = 0; p < widths.length; p++) {
       const wEm = (widths[p] || 0) * 0.5 + 1.4;
       if (p) left -= 0.0625;
+      colLeft[p] = left;
+      colWidthEm[p] = wEm;
       rules.push(`.live-preview .${TABLE_COL_CLASS_PREFIX}${p}{width:${wEm.toFixed(2)}em;left:${left.toFixed(2)}em}`);
       left += wEm;
     }
@@ -821,6 +827,17 @@
           const from = pipes[p] + 1, to = pipes[p + 1];
           cells.push(Object.assign({ p, from, to }, splitCellPieces(text, from, to)));
         }
+        // 数据行：行末挂一个「…」行菜单按钮（表头行、分隔行不挂 —— 删掉它们
+        // 表格就不再是表格了）。按钮绝对定位在「本行最后一格的右边界之外」，
+        // 放在两个渲染分支之前：含 <br> 的行走绝对定位网格，同样要有这个按钮。
+        if (n > b.sep && cells.length) {
+          const lastCol = cells[cells.length - 1].p;
+          const rightEm = (colLeft[lastCol] !== undefined)
+            ? colLeft[lastCol] + colWidthEm[lastCol]
+            : colLeft[colLeft.length - 1] + colWidthEm[colWidthEm.length - 1];
+          addRowMenuWidget(b, n, text.length, rightEm + ROW_MENU_GAP_EM);
+        }
+
         const segs = Math.max(1, ...cells.map((c) => c.pieces.length));
         if (segs > 1) {
           markMultilineRow(b, n, cells, segs);
@@ -842,6 +859,161 @@
     // 这里只在表格标注真正重建过之后调用，不是每次防抖都调，避免无谓的开销。
     cmEditor.refresh();
   }
+
+  // ---------------- 数据行右侧的「…」行菜单 ----------------
+  //
+  // 光标（或鼠标）落到某个数据行时，在这行**最后一格的右边界之外**露出一个「…」，
+  // 点开是行操作菜单，目前只有「删除本行」。
+  //
+  // 三个要点：
+  //   1. 按钮挂在行末的零长度 CodeMirror widget 上（replacedWith），由 CSS 绝对
+  //      定位到「最后一列右边界 + 间隙」。不能用文档流定位 —— 含 <br> 的行里格子
+  //      全是绝对定位的，文档流里没有宽度，按钮会跑到行首去。
+  //   2. 按钮对每一行都挂着、平时透明，靠 CSS 在「光标所在行」或「鼠标悬停行」
+  //      时才显形 —— 这样不用为光标移动重建标注（那会每次移动都重排表格）。
+  //   3. 行号在编辑中会漂移，闭包里存的是**行句柄**，点了才反查当前行号，并复核
+  //      这行还是不是表格里的数据行（标注有 300ms 防抖，中间存在窗口期）。
+  const ROW_MENU_GAP_EM = 0.4;      // 按钮与最后一格之间的间隙（em，与列宽同一套换算）
+  let rowMenuEl = null;             // 菜单全局单例，避免每行都造一张
+
+  function addRowMenuWidget(b, n, ch, leftEm) {
+    const handle = cmEditor.getLineHandle(n);
+    cmEditor.addLineClass(handle, 'text', 'cm-tbl-row');
+    b.rowClasses.push([handle, 'cm-tbl-row']);
+
+    const anchor = document.createElement('span');
+    anchor.className = 'cm-tbl-menu-anchor';
+    anchor.style.left = leftEm.toFixed(2) + 'em';
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'cm-tbl-menu-btn';
+    btn.textContent = '⋯';     // ⋯
+    btn.title = '行操作';
+    // 别让 CodeMirror 收到这次按下 —— 否则它会顺手把光标挪到别处
+    btn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openRowMenu(handle, btn);
+    });
+    anchor.appendChild(btn);
+
+    b.marks.push(cmEditor.markText({ line: n, ch }, { line: n, ch },
+      { replacedWith: anchor, clearWhenEmpty: false, className: 'cm-tbl-menu-widget' }));
+  }
+
+  let rowMenuOffChange = null;
+
+  // 光标所在的数据行：按钮靠行上的 cm-tbl-row-active 显形。
+  // CM5 的 styleActiveLine 只在行上盖一层 .CodeMirror-activeline 的 div，行元素
+  // 本身不带类（实测），所以这份状态得自己维护；用 addLineClass 挂，行被重绘也还在。
+  let activeRowHandle = null;
+
+  function updateActiveTableRow() {
+    const pos = cmEditor.getCursor();
+    const handle = isRowShapedDataLine(pos.line) ? cmEditor.getLineHandle(pos.line) : null;
+    if (handle === activeRowHandle) return;
+    if (activeRowHandle) cmEditor.removeLineClass(activeRowHandle, 'text', 'cm-tbl-row-active');
+    activeRowHandle = handle;
+    if (activeRowHandle) cmEditor.addLineClass(activeRowHandle, 'text', 'cm-tbl-row-active');
+  }
+
+  function clearActiveTableRow() {
+    if (activeRowHandle) cmEditor.removeLineClass(activeRowHandle, 'text', 'cm-tbl-row-active');
+    activeRowHandle = null;
+  }
+
+  // 轻量版「这行是表格数据行」：只看行形状和上方有没有分隔行，不算围栏掩码 ——
+  // 它挂在每次光标移动上，不能做重活。代码围栏里的行即使被误判也没关系，
+  // 那里根本没有按钮可显。
+  function isRowShapedDataLine(line) {
+    const text = cmEditor.getLine(line);
+    if (text === undefined || !TABLE_ROW_RE.test(text) || TABLE_SEP_RE.test(text)) return false;
+    for (let n = line - 1; n >= 0; n--) {
+      const above = cmEditor.getLine(n);
+      if (above === undefined || !TABLE_ROW_RE.test(above)) return false;
+      if (TABLE_SEP_RE.test(above)) return true;
+    }
+    return false;
+  }
+
+  function closeRowMenu() {
+    if (!rowMenuEl) return;
+    rowMenuEl.remove();
+    rowMenuEl = null;
+    if (rowMenuOffChange) { cmEditor.off('change', rowMenuOffChange); rowMenuOffChange = null; }
+  }
+
+  // 这行现在还是不是「表格里的数据行」。表头行与分隔行都不算 —— 删掉它们
+  // 表格就不再是表格了，菜单里不该给这个口子。
+  function isDataRowLine(line) {
+    const t = tableLineTesters(cmEditor);
+    if (!t.isRow(line) || t.isSep(line)) return false;
+    let n = line;                                            // 往上找本表的分隔行
+    while (n - 1 >= 0 && t.isRow(n - 1) && !t.isSep(n - 1)) n--;
+    if (!(n - 1 >= 0 && t.isSep(n - 1))) return false;       // 上面没有分隔行 -> 不是表格
+    return line >= n;                                        // n 起是数据区，n-1 是分隔行
+  }
+
+  function openRowMenu(handle, btn) {
+    closeRowMenu();
+    const line = cmEditor.getLineNumber(handle);
+    if (line === null || line < 0 || !isDataRowLine(line)) return;
+
+    const el = document.createElement('div');
+    el.className = 'cm-tbl-rowmenu';
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'cm-tbl-rowmenu-item';
+    del.textContent = '删除本行';
+    del.addEventListener('mousedown', (e) => e.preventDefault());
+    del.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const at = cmEditor.getLineNumber(handle);   // 再查一次：菜单开着时可能又编辑过
+      closeRowMenu();
+      if (at !== null && at >= 0 && isDataRowLine(at)) deleteTableRowAt(at);
+    });
+    el.appendChild(del);
+    document.body.appendChild(el);
+
+    // 默认摆在按钮正下方；贴到视口边缘就往回收
+    const r = btn.getBoundingClientRect();
+    el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - el.offsetWidth - 8)) + 'px';
+    el.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - el.offsetHeight - 8)) + 'px';
+    rowMenuEl = el;
+
+    // 内容一变就收起来：菜单里的行号可能已经不作数了
+    rowMenuOffChange = () => closeRowMenu();
+    cmEditor.on('change', rowMenuOffChange);
+  }
+
+  // 删除第 line 行整行（连同它的换行）
+  function deleteTableRowAt(line) {
+    const count = cmEditor.lineCount();
+    if (line < 0 || line >= count) return;
+    if (line < count - 1) {
+      cmEditor.replaceRange('', { line, ch: 0 }, { line: line + 1, ch: 0 });
+    } else if (line > 0) {
+      // 最后一行后面没有换行可删，改删它前面那个换行
+      cmEditor.replaceRange('', { line: line - 1, ch: cmEditor.getLine(line - 1).length },
+        { line, ch: cmEditor.getLine(line).length });
+    }
+    // 光标落到顶上来的那一行的第一格（没有了就不动）
+    const at = Math.min(line, cmEditor.lineCount() - 1);
+    if (at >= 0 && isDataRowLine(at)) moveToTableCell(cmEditor, at, 0);
+    cmEditor.focus();
+  }
+
+  // 点别处、按 Esc、滚动 —— 都收起菜单
+  document.addEventListener('mousedown', (e) => {
+    if (rowMenuEl && !rowMenuEl.contains(e.target)) closeRowMenu();
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    if (rowMenuEl && e.key === 'Escape') closeRowMenu();
+  }, true);
+  window.addEventListener('scroll', () => { if (rowMenuEl) closeRowMenu(); }, true);
 
   // ---------------- 表格内的按键导航 ----------------
   // 下面这些共用一套「某行是不是表格行 / 分隔行」的判定，Tab、Enter、Ctrl+Enter

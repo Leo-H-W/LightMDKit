@@ -174,7 +174,12 @@ const rows = () => page.evaluate(() => [...document.querySelectorAll('.CodeMirro
   .map((l) => {
     const r = l.getBoundingClientRect();
     return {
-      text: l.textContent,
+      // 行里还挂着「…」行菜单的 widget，那点文字不算源码，比对前先剔掉
+      text: (() => {
+        const clone = l.cloneNode(true);
+        clone.querySelectorAll('.CodeMirror-widget').forEach((w) => w.remove());
+        return clone.textContent;
+      })(),
       h: Math.round(r.height),
       mline: l.className.includes('cm-tbl-mline'),
       boxes: [...l.querySelectorAll('.cm-tbl-cell')].map((b) => {
@@ -367,6 +372,91 @@ await setDoc(TABLE);
   const n0 = (await getDoc()).split('\n').length;
   await press('Tab');
   check('K5', '表格外 Tab 不插行（走默认缩进）', (await getDoc()).split('\n').length === n0, JSON.stringify(await getDoc()));
+}
+
+// ---------- M1–M5：数据行右侧的「…」行菜单 ----------
+{
+  const MENUTABLE = [
+    '| A | B | C |',
+    '|---|---|---|',
+    '| a1 | b1 | c1 |',
+    '| m1<br>m2 | b2 | c2 |',
+    '| a3 | b3 | c3 |',
+  ].join('\n');
+  const buttons = () => page.evaluate(() => [...document.querySelectorAll('.cm-tbl-menu-btn')].map((b) => {
+    const r = b.getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), opacity: getComputedStyle(b).opacity };
+  }));
+  const btnOfRow = (frag) => page.evaluate(`(() => {
+    const l = [...document.querySelectorAll('.CodeMirror-line')].find((x) => x.textContent.includes(${JSON.stringify(frag)}));
+    if (!l) return null;
+    const b = l.querySelector('.cm-tbl-menu-btn');
+    const cells = l.querySelectorAll('.cm-tbl-cell');
+    if (!b || !cells.length) return null;
+    const br = b.getBoundingClientRect(), cr = cells[cells.length - 1].getBoundingClientRect();
+    return { x: Math.round(br.x), right: Math.round(cr.right), outside: br.x >= cr.right,
+             opacity: getComputedStyle(b).opacity };
+  })()`);
+
+  await setDoc(MENUTABLE);
+  const bs = await buttons();
+  check('M3', '按钮数量 = 数据行数（3），表头与分隔行没有', bs.length === 3, `${bs.length} 个`);
+  await setCursorAt(2, 3);                     // 光标落在第 3 行（a1 行）
+  await page.waitForTimeout(250);
+  const op = (await buttons()).map((b) => b.opacity);
+  check('M1', '光标所在行按钮显形，其余行不显示', op[0] === '1' && op[1] === '0' && op[2] === '0', op.join(','));
+  const normal = await btnOfRow('a1');
+  check('M1', '按钮在最后一格之外（表格右侧）', normal?.outside === true, JSON.stringify(normal));
+  const multi = await btnOfRow('m1');
+  check('M4', '含 <br> 的多行行也有按钮，且在最后一格右侧', multi?.outside === true, JSON.stringify(multi));
+
+  // 点按钮 -> 菜单；点菜单项 -> 删行
+  const caretBefore = await getCursor();
+  const pt = await page.evaluate(() => {
+    const l = [...document.querySelectorAll('.CodeMirror-line')].find((x) => x.textContent.includes('a1'));
+    const r = l.querySelector('.cm-tbl-menu-btn').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.click(pt.x, pt.y);
+  await page.waitForTimeout(300);
+  const menu = await page.evaluate(() => {
+    const m = document.querySelector('.cm-tbl-rowmenu');
+    return m ? [...m.querySelectorAll('button')].map((b) => b.textContent) : null;
+  });
+  check('M2', '点「…」弹出菜单，含「删除本行」', !!menu && menu.includes('删除本行'), JSON.stringify(menu));
+  check('M5', '点按钮不会把光标挪走', (await getCursor()) === caretBefore, `${caretBefore} -> ${await getCursor()}`);
+  await page.click('.cm-tbl-rowmenu-item');
+  await page.waitForTimeout(600);
+  const afterDel = (await getDoc()).split('\n');
+  check('M2', '删除后该行消失、表格列数与其余行不变',
+    afterDel.length === 4 && !afterDel.some((l) => l.includes('a1')) &&
+    afterDel[2].includes('m1') && afterDel[3].includes('a3') &&
+    (afterDel[0].match(/\|/g) || []).length === 4,
+    JSON.stringify(afterDel));
+  check('M5', '删除后菜单自动收起', (await page.evaluate(() => !document.querySelector('.cm-tbl-rowmenu'))));
+
+  // Esc 收起
+  await setDoc(MENUTABLE);
+  await setCursorAt(2, 3);
+  await page.waitForTimeout(200);
+  const pt2 = await page.evaluate(() => {
+    const l = [...document.querySelectorAll('.CodeMirror-line')].find((x) => x.textContent.includes('a1'));
+    const r = l.querySelector('.cm-tbl-menu-btn').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.click(pt2.x, pt2.y);
+  await page.waitForTimeout(250);
+  const opened = await page.evaluate(() => !!document.querySelector('.cm-tbl-rowmenu'));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(250);
+  const closedByEsc = await page.evaluate(() => !document.querySelector('.cm-tbl-rowmenu'));
+  check('M5', '按 Esc 收起菜单', opened && closedByEsc, `打开=${opened} Esc后关闭=${closedByEsc}`);
+  // 点别处收起
+  await page.mouse.click(pt2.x, pt2.y);
+  await page.waitForTimeout(250);
+  await page.mouse.click(1000, 600);           // 表格外的空白处
+  await page.waitForTimeout(300);
+  check('M5', '点菜单外收起菜单', await page.evaluate(() => !document.querySelector('.cm-tbl-rowmenu')));
 }
 
 // ---------- B1：普通表格基线 ----------
