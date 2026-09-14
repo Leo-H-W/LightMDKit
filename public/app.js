@@ -1250,6 +1250,19 @@
     }, true);
   }
 
+  // 浏览器给的「这个视口坐标落在哪个插入点」（Chrome/Edge 走前者，Firefox 走后者）
+  function caretFromPoint(x, y) {
+    if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(x, y);
+      if (r) return { node: r.startContainer, offset: r.startOffset };
+    }
+    if (document.caretPositionFromPoint) {
+      const p = document.caretPositionFromPoint(x, y);
+      if (p) return { node: p.offsetNode, offset: p.offset };
+    }
+    return null;
+  }
+
   // 由鼠标事件算出表格里的文本位置；不在表格行上返回 null
   function tablePosFromEvent(e) {
     const lineEl = e.target && e.target.closest ? e.target.closest('.CodeMirror-line') : null;
@@ -1266,8 +1279,34 @@
 
     const text = cmEditor.getLine(line);
     if (text === undefined) return null;
+
+    // 首选：让浏览器按**真实排版**给插入点。行内 DOM 的文字与源码是一一对应的
+    // （管道符、`<br>` 都原样在 DOM 里、绝对定位的段也在文档顺序上），所以从行首
+    // 量到落点的字符数就是文档里的 ch。
+    //
+    // 不能用原来的「按格子宽度线性分摊」：格子宽度取的是整列最宽那行的宽度，
+    // 内容短的行右边全是空白，按比例算会把「点内容末尾」映射到中间某个字后面
+    // （实测点「制造业」的「业」后面，光标落到「造」后面）。
+    const hit = caretFromPoint(e.clientX, e.clientY);
+    if (hit && hit.node && lineEl.contains(hit.node)) {
+      // 点在行内 widget 上（行末的「…」行菜单按钮就是）不算文本落点：
+      // 让位给按钮自己的点击处理，否则这里会把光标挪到行尾去。
+      const hitEl = hit.node.nodeType === 3 ? hit.node.parentNode : hit.node;
+      if (hitEl && hitEl.closest && hitEl.closest('.CodeMirror-widget')) return null;
+    }
+    if (hit && lineEl.contains(hit.node)) {
+      try {
+        const pre = document.createRange();
+        pre.setStart(lineEl, 0);
+        pre.setEnd(hit.node, hit.offset);
+        const ch = pre.toString().length;
+        if (ch >= 0 && ch <= text.length) return { line, ch };
+      } catch (err) { /* 落点算不出来就退回下面的估算 */ }
+    }
+
     const pipes = pipePositions(text);
 
+    // 兜底：按列与段定位后估算列内位置。
     // 含 <br> 的格子在 DOM 里是多个盒子（一段一个），所以按列号取这一列的全部盒子，
     // 先用横坐标定列、再用纵坐标定是哪一段。单行格子只有一段，行为与从前一致。
     // 只要格子（.cm-tbl-cell）：不占位的 <br> 也带着列号类，会把段号数乱。

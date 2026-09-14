@@ -374,6 +374,43 @@ await setDoc(TABLE);
   check('K5', '表格外 Tab 不插行（走默认缩进）', (await getDoc()).split('\n').length === n0, JSON.stringify(await getDoc()));
 }
 
+// ---------- C1–C4：单元格点击落点（精确到字） ----------
+{
+  const CLICKTABLE = [
+    '|行业|名字|哈哈|',
+    '|---|---|---|',
+    '|制造业|信锐|哈哈|',
+    '| a<br>bb | x | y |',
+  ].join('\n');
+  // 每次点击前现量坐标：点击可能把视图滚一下，旧坐标就不作数了
+  const probe = async (id, name, lineText, boxSel, spot, expect) => {
+    const g = await page.evaluate(({ lineText, boxSel, spot }) => {
+      const l = [...document.querySelectorAll('.CodeMirror-line')].find((x) => x.textContent.includes(lineText));
+      const box = l.querySelector(typeof boxSel === 'number' ? ('.cm-tbl-c' + boxSel + '.cm-tbl-cell') : boxSel);
+      const r = document.createRange();
+      r.selectNodeContents(box);
+      const t = r.getBoundingClientRect(), b = box.getBoundingClientRect();
+      const x = spot === 'textEnd' ? t.right - 2
+        : spot === 'rightBlank' ? (t.right + b.right) / 2
+        : spot === 'leftPad' ? b.left + 3
+        : spot === 'firstGlyphRight' ? t.left + 12
+        : (t.left + t.right) / 2 + 2;
+      return { x, y: (t.top + t.bottom) / 2 };
+    }, { lineText, boxSel, spot });
+    await page.mouse.click(g.x, g.y);
+    await page.waitForTimeout(220);
+    check(id, name, (await getCursor()) === expect, `实得 ${await getCursor()}，期望 ${expect}`);
+  };
+
+  await setDoc(CLICKTABLE);
+  await probe('C1', '点「业」右半边：光标落在业之后', '制造业', 0, 'textEnd', '2:4');
+  await probe('C1', '点内容右侧空白：光标落在内容末尾', '制造业', 0, 'rightBlank', '2:4');
+  await probe('C2', '点「制」右半边：落在制之后', '制造业', 0, 'firstGlyphRight', '2:2');
+  await probe('C2', '点「造」右半边：落在造之后', '制造业', 0, 'textMid', '2:3');
+  await probe('C3', '点格子左侧内边距：落在内容之前', '制造业', 0, 'leftPad', '2:1');
+  await probe('C4', '多行行第二段行尾：落在该段之后', 'a<br>bb', '.cm-tbl-seg1.cm-tbl-cell', 'textEnd', '3:9');
+}
+
 // ---------- M1–M5：数据行右侧的「…」行菜单 ----------
 {
   const MENUTABLE = [
@@ -401,6 +438,7 @@ await setDoc(TABLE);
   await setDoc(MENUTABLE);
   const bs = await buttons();
   check('M3', '按钮数量 = 数据行数（3），表头与分隔行没有', bs.length === 3, `${bs.length} 个`);
+  await page.mouse.move(1150, 700);            // 先把鼠标挪开，免得 :hover 多亮一个
   await setCursorAt(2, 3);                     // 光标落在第 3 行（a1 行）
   await page.waitForTimeout(250);
   const op = (await buttons()).map((b) => b.opacity);
