@@ -110,6 +110,10 @@ const type = async (s, gap = 120) => {
   return page.evaluate(() => performance.now());
 };
 const btnActive = () => page.evaluate(() => document.getElementById('btn-autosave').classList.contains('active'));
+// 工具栏右侧各按钮的横坐标：点开关不该让它们位移（状态栏文字出现会把左边顶走）
+const toolbarXs = () => page.evaluate(() =>
+  [...document.querySelectorAll('.toolbar-right .btn, .toolbar-right .switch')]
+    .map((b) => Math.round(b.getBoundingClientRect().x)));
 // 滑动开关的外观：滑块位移 + 轨道底色（关=灰/左，开=蓝/右）
 const switchVisual = () => page.evaluate(() => {
   const b = document.getElementById('btn-autosave');
@@ -150,9 +154,12 @@ check('S2', '关闭状态下编辑：同样零写入', (await writes()).length =
 
 // ---------- S3：打开开关后才开始自动保存 ----------
 await clearWrites();
+const xsBefore = await toolbarXs();
 await page.click('#btn-autosave');
 await page.waitForTimeout(200);
 check('S3', '点击后按钮变为开启态', (await btnActive()) === true);
+check('S3', '点击开关不会让工具栏按钮位移', JSON.stringify(await toolbarXs()) === JSON.stringify(xsBefore),
+  `前 ${xsBefore.join(',')} / 后 ${(await toolbarXs()).join(',')}`);
 {
   const v = await switchVisual();
   const slid = v.knob === 'none' || v.knob.includes('0, 0, 0, 0') ? false : true;
@@ -201,6 +208,8 @@ check('A4', '改了又改回去 → 不写', w.length === 0, `${w.length} 次`);
 await page.click('#btn-autosave');
 await page.waitForTimeout(200);
 check('S4', '再点一下恢复未开启态', (await btnActive()) === false);
+check('S4', '关闭后工具栏按钮同样不位移', JSON.stringify(await toolbarXs()) === JSON.stringify(xsBefore),
+  `前 ${xsBefore.join(',')} / 后 ${(await toolbarXs()).join(',')}`);
 {
   const v = await switchVisual();
   const back = v.knob === 'none' || v.knob.includes('0, 0, 0, 0');

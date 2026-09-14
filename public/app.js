@@ -2592,13 +2592,12 @@
       autosaveOn = !autosaveOn;
       saveAutosavePreference();
       applyAutosaveButton();
+      // 特意不往状态栏写提示：状态栏在工具栏最右，文字一出现一消失会把左边的
+      // 按钮顶来顶去。开关自身的滑块位置就是状态，tooltip 里也写明了。
       if (autosaveOn) {
-        // 打开时顺手把当前还没保存的改动排上，不必再敲一个字符才触发
-        scheduleAutosave();
-        setStatus('自动保存已开启：停止编辑 5 秒后写盘', 'success');
+        scheduleAutosave();   // 打开时顺手把当前还没保存的改动排上
       } else {
-        stopAutosave();   // 撤掉已经排期的那一次
-        setStatus('自动保存已关闭：不再自动写盘');
+        stopAutosave();       // 撤掉已经排期的那一次
       }
     });
     applyAutosaveButton();
