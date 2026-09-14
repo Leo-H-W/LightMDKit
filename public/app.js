@@ -157,6 +157,7 @@
       updateActiveTocItemByCursor();
       updateSepReveal();        // 光标进入表头行时分隔行要展开
       updateActiveTableRow();   // 数据行右侧的「…」按钮按它显隐
+      normalizeTableCursorSticky();   // 光标落在格子内容末尾时贴向前一个字符
     });
 
     bindTableClickFix();   // 修正表格行里鼠标点击的光标落点
@@ -924,6 +925,17 @@
     activeRowHandle = null;
   }
 
+  // 键盘把光标移到「格子内容末尾」（贴在管道符前）时，同样补上 sticky，
+  // 否则光标会跳到格子右边界去。位置本身不变，只是渲染时贴向前一个字符。
+  function normalizeTableCursorSticky() {
+    const pos = cmEditor.getCursor();
+    if (pos.sticky === 'before') return;            // 标过就不再动，免得来回设光标
+    const text = cmEditor.getLine(pos.line);
+    if (text === undefined || !TABLE_ROW_RE.test(text)) return;
+    if (text[pos.ch] !== '|') return;
+    cmEditor.setCursor({ line: pos.line, ch: pos.ch, sticky: 'before' });
+  }
+
   // 轻量版「这行是表格数据行」：只看行形状和上方有没有分隔行，不算围栏掩码 ——
   // 它挂在每次光标移动上，不能做重活。代码围栏里的行即使被误判也没关系，
   // 那里根本没有按钮可显。
@@ -1300,7 +1312,7 @@
         pre.setStart(lineEl, 0);
         pre.setEnd(hit.node, hit.offset);
         const ch = pre.toString().length;
-        if (ch >= 0 && ch <= text.length) return { line, ch };
+        if (ch >= 0 && ch <= text.length) return tableCursorPos(line, ch, text);
       } catch (err) { /* 落点算不出来就退回下面的估算 */ }
     }
 
@@ -1325,9 +1337,22 @@
       const r = box.getBoundingClientRect();
       const inner = Math.max(1, r.width - pad * 2);
       const frac = Math.min(1, Math.max(0, (e.clientX - (r.left + pad)) / inner));
-      return { line, ch: piece.from + Math.round(frac * (piece.to - piece.from)) };
+      return tableCursorPos(line, piece.from + Math.round(frac * (piece.to - piece.from)), text);
     }
     return null;
+  }
+
+  // 表格行里的光标位置。
+  //
+  // 位置「贴在管道符前面」时（也就是格子内容的末尾）要带上 sticky: 'before'：
+  // CodeMirror 画光标时，sticky 为 before 量的是**前一个字符的右边缘**，否则量
+  // 当前字符（那根管道符）的左边缘。管道符被压成 0 宽、又落在定宽格子的右边界上，
+  // 不这么做光标就画到几十像素开外（实测点「制造业」的「业」后面：光标位置 2:4
+  // 是对的，竖线却画在 x=398 的格子右边界，「业」其实结束在 x=361）。
+  // 位置本身不变，只是渲染时贴向前一个字符。
+  function tableCursorPos(line, ch, text) {
+    if (text !== undefined && text[ch] === '|') return { line, ch, sticky: 'before' };
+    return { line, ch };
   }
 
   // 只负责按当前文档重建目录内容，不关心侧边栏当前展示的是哪个面板。

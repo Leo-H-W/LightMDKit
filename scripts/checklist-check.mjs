@@ -409,6 +409,36 @@ await setDoc(TABLE);
   await probe('C2', '点「造」右半边：落在造之后', '制造业', 0, 'textMid', '2:3');
   await probe('C3', '点格子左侧内边距：落在内容之前', '制造业', 0, 'leftPad', '2:1');
   await probe('C4', '多行行第二段行尾：落在该段之后', 'a<br>bb', '.cm-tbl-seg1.cm-tbl-cell', 'textEnd', '3:9');
+
+  // C5：位置对了还不够，光标竖线要画在文字末尾（不是格子右边界）
+  const caretVsGlyph = async (id, name, viaKeyboard) => {
+    const g = await page.evaluate(({ viaKeyboard }) => {
+      const l = [...document.querySelectorAll('.CodeMirror-line')].find((x) => x.textContent.includes('制造业'));
+      const box = l.querySelector('.cm-tbl-c0.cm-tbl-cell');
+      const node = box.firstChild;
+      const leaf = (i) => { const r = document.createRange(); r.setStart(node, i); r.setEnd(node, i + 1); return r.getBoundingClientRect(); };
+      const ye = leaf(2);
+      return { yeRight: ye.right, clickX: ye.right - 2, y: (ye.top + ye.bottom) / 2 };
+    }, { viaKeyboard });
+    if (viaKeyboard) {
+      // 键盘路径：把光标直接放到内容末尾（2:4），由 cursorActivity 里的归一化补 sticky
+      await page.evaluate(`(() => { const c = ${CM}; c.setCursor({ line: 2, ch: 4 }); c.focus(); })()`);
+    } else {
+      await page.mouse.click(g.clickX, g.y);
+    }
+    await page.waitForTimeout(250);
+    const res = await page.evaluate(`(() => {
+      const c = ${CM};
+      const p = c.getCursor();
+      const cur = document.querySelector('.CodeMirror-cursor');
+      const r = cur && cur.getBoundingClientRect();
+      return { pos: p.line + ':' + p.ch, x: r ? r.x : null };
+    })()`);
+    const ok = res.pos === '2:4' && res.x !== null && Math.abs(res.x - g.yeRight) <= 1;
+    check(id, name, ok, `光标 ${res.pos}，竖线 x=${res.x === null ? '无' : Math.round(res.x)}，「业」右边缘 ${Math.round(g.yeRight)}`);
+  };
+  await caretVsGlyph('C5', '点击内容末尾：竖线画在文字末尾（相差 ≤1px）', false);
+  await caretVsGlyph('C5', '键盘移到内容末尾：竖线同样画在文字末尾', true);
 }
 
 // ---------- M1–M5：数据行右侧的「…」行菜单 ----------
