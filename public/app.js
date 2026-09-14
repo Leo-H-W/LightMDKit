@@ -979,6 +979,41 @@
     return null;
   }
 
+  // Backspace / Delete：单元格里的 `<br>` 当成一个整体，一次删干净。
+  //
+  // 默认是一个字符一个字符地删：删掉 `>` 会留下 `<br`，半截标记既不是换行、又
+  // 会被当普通文字显示出来（那一格还会从多行掉回单行），删完一个 `<br>` 要按
+  // 四次。这里把「光标落在 <br> 里面」与「光标紧贴 <br> 的待删那一侧」都当作
+  // 删整个标记；其余情况返回 CodeMirror.Pass，交回默认行为。
+  // 只管表格行里的 —— 表格外的 <br> 是普通文字，保持原有的逐字删除。
+  function brDeleteTarget(cm, forward) {
+    const pos = cm.getCursor();
+    const t = tableLineTesters(cm);
+    if (!t.isRow(pos.line)) return null;
+    const text = cm.getLine(pos.line);
+    TABLE_BR_RE.lastIndex = 0;
+    let m;
+    while ((m = TABLE_BR_RE.exec(text)) !== null) {
+      const from = m.index, to = from + m[0].length;
+      if (pos.ch > from && pos.ch < to) return { from, to };               // 光标在 <br> 里
+      if (forward ? pos.ch === from : pos.ch === to) return { from, to };  // 紧贴它的前后
+    }
+    return null;
+  }
+
+  function tableBrDeleteKey(cm, forward) {
+    if (cm.somethingSelected()) return CodeMirror.Pass;   // 有选区时按默认删选区
+    const hit = brDeleteTarget(cm, forward);
+    if (!hit) return CodeMirror.Pass;
+    const line = cm.getCursor().line;
+    // 与默认删除用同一个 origin，连续删除才会并进同一步撤销
+    cm.replaceRange('', { line, ch: hit.from }, { line, ch: hit.to }, '+delete');
+    return null;
+  }
+
+  function tableBackspaceKey(cm) { return tableBrDeleteKey(cm, false); }
+  function tableDeleteKey(cm) { return tableBrDeleteKey(cm, true); }
+
   // 表格行里鼠标点击的落点修正。
   //
   // 为什么只能在这一层拦：CodeMirror 的 onMouseDown 挂在 display.scroller（wrapper 的
@@ -1713,7 +1748,8 @@
   //            由 CodeMirror 官方 addon continuelist 提供（index.html 里引入）。
   //   Tab   —— 表格里新增一行；不在表格里时 tableTabKey 返回 CodeMirror.Pass，
   //            交回默认的缩进行为。
-  // 传统模式不挂这两个，按键行为保持原样。
+  //             Backspace / Delete —— 表格行里的 `<br>` 整段删掉，表格外交回默认。
+  // 传统模式不挂这几个，按键行为保持原样。
   // 若 continuelist 没加载成功（CDN 失败），不能把不存在的命令名交给 CodeMirror，
   // 否则按 Enter 会报错，所以这里探测一下再决定。
   // Enter 交给 tableEnterKey：表格里做单元格导航，表格外显式转交「列表续行」。
@@ -1722,6 +1758,9 @@
     Enter: tableEnterKey,
     'Ctrl-Enter': tableCtrlEnterKey,
     Tab: tableTabKey,
+    // Backspace / Delete 只多一条「删 <br> 就删一整个」的规则，其余交给默认
+    Backspace: tableBackspaceKey,
+    Delete: tableDeleteKey,
   };
 
   // 三种界面形态（传统-浏览 / 传统-编辑 / 现代）的显隐统一由这里决定，
