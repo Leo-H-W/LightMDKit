@@ -905,6 +905,14 @@ html {
   margin-left: -1px;
 }
 
+/* 空单元格（内容区间零长度，标记里搭上了它后面那根管道符）：
+   把管道符那套「1px 字号 + 负字距」还原成正常字号，盒子才是正常一行高。
+   颜色仍是 transparent（来自 .cm-tbl-pipe），所以那根管道符看不见。 */
+.live-preview .CodeMirror-line .cm-tbl-cell.cm-tbl-blank {
+  font-size: inherit;
+  letter-spacing: normal;
+}
+
 /* 表头行 */
 .live-preview .CodeMirror-line .cm-tbl-head {
   font-weight: 700;

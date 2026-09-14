@@ -441,6 +441,74 @@ await setDoc(TABLE);
   await caretVsGlyph('C5', '键盘移到内容末尾：竖线同样画在文字末尾', true);
 }
 
+// ---------- E1：把格子删空不能把盒子/行高弄没 ----------
+{
+  const BLANKTABLE = [
+    '| A | B | C |',
+    '|---|---|---|',
+    '|   |   |   |',      // line 2：三个格子都只有空格
+    '| a1 | b1 | c1 |',   // line 3：有内容的一行
+  ].join('\n');
+  // 按当前源码找渲染出来的那一行（行末挂着「…」widget，比对文本前先剔掉）
+  const rowOfLine = (line) => page.evaluate(`(() => {
+    const c = ${CM};
+    const want = c.getLine(${line});
+    const l = [...document.querySelectorAll('.CodeMirror-line')].find((x) => {
+      const k = x.cloneNode(true);
+      k.querySelectorAll('.CodeMirror-widget').forEach((w) => w.remove());
+      // CodeMirror 把行里的空格渲染成不换行空格（U+00A0），比对前先归一化
+      return k.textContent.split(String.fromCharCode(160)).join(' ') === want;
+    });
+    if (!l) return null;
+    return {
+      text: c.getLine(${line}),
+      h: Math.round(l.getBoundingClientRect().height),
+      cells: [...l.querySelectorAll('.cm-tbl-cell')].map((x) => Math.round(x.getBoundingClientRect().height)),
+      pipes: (c.getLine(${line}).match(/\\|/g) || []).length,
+    };
+  })()`);
+  // 把第 line 行第 cell 格的字符逐个删掉（光标放到待删字符上，再按 Delete）
+  const emptyCell = async (line, cell) => {
+    for (let i = 0; i < 8; i++) {
+      const ch = await page.evaluate(`(() => {
+        const c = ${CM};
+        const t = c.getLine(${line});
+        const pipes = [];
+        for (let i = 0; i < t.length; i++) if (t[i] === '|' && t[i - 1] !== '\\\\') pipes.push(i);
+        const a = pipes[${cell}] + 1, b = pipes[${cell} + 1];
+        for (let k = a; k < b; k++) if (t[k] !== ' ') return k;   // 有内容先删内容
+        return a < b ? a : -1;                                    // 只剩空格就删空格
+      })()`);
+      if (ch < 0) return;
+      await setCursorAt(line, ch);
+      await press('Delete');
+    }
+  };
+
+  await setDoc(BLANKTABLE);
+  let r = await rowOfLine(2);
+  check('E1', '删之前：空行 3 个盒子、行高 37px',
+    !!r && r.h === 37 && r.cells.length === 3 && r.cells.every((h) => h === 37), JSON.stringify(r));
+
+  await emptyCell(2, 0);
+  r = await rowOfLine(2);
+  check('E1', '删空第 1 格：盒子不消失（仍 3 个）、行高仍 37px',
+    !!r && r.h === 37 && r.cells.length === 3 && r.cells.every((h) => h === 37), JSON.stringify(r));
+  check('E1', '删空第 1 格后管道符一个不少', !!r && r.pipes === 4, r ? `${r.pipes} 个` : '');
+
+  await emptyCell(2, 1);
+  await emptyCell(2, 2);
+  r = await rowOfLine(2);
+  check('E1', '整行三格全删空：仍 3 个盒子、行高仍 37px',
+    !!r && r.h === 37 && r.cells.length === 3 && r.cells.every((h) => h === 37), JSON.stringify(r));
+  check('E1', '整行删空后管道符仍 4 个', !!r && r.pipes === 4, r ? `${r.pipes} 个` : '');
+
+  await emptyCell(3, 1);
+  const r3 = await rowOfLine(3);
+  check('E1', '有内容的行里删空中间格：盒子不消失、行高仍 37px',
+    !!r3 && r3.h === 37 && r3.cells.length === 3 && r3.cells.every((h) => h === 37), JSON.stringify(r3));
+}
+
 // ---------- M1–M5：数据行右侧的「…」行菜单 ----------
 {
   const MENUTABLE = [

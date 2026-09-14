@@ -870,9 +870,16 @@
           continue;
         }
         for (const c of cells) {
+          // 格子被删空时（两个管道符之间一个字符都没有）它的区间是零长度：
+          // CodeMirror 对零长度标记不生成 span，格子会连盒子一起消失 —— 边框、
+          // 背景、高度全没，整行看起来被压扁（实测 `|   |   |   |` 删空后只剩
+          // 27px 行高，格高从 37 掉到没有）。这里把后面那根管道符一起标进来给
+          // 它个实体，并用 cm-tbl-blank 抹掉管道符的缩字号效果（1px 字号会让
+          // 盒子又扁又矮）。
+          const blank = c.to === c.from;
           b.marks.push(cmEditor.markText(
-            { line: n, ch: c.from }, { line: n, ch: c.to },
-            { className: cellClass(c.p, n === b.from) }));
+            { line: n, ch: c.from }, { line: n, ch: blank ? pipes[c.p + 1] + 1 : c.to },
+            { className: cellClass(c.p, n === b.from) + (blank ? ' cm-tbl-blank' : '') }));
         }
       }
     }
