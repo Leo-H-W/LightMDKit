@@ -94,9 +94,12 @@
   const SCAN_SKIP_DIRS = new Set([
     'node_modules', '.git', '.svn', '.hg', '.idea', '.vscode', 'dist', 'build',
   ]);
-  // 编辑模式下的自动保存定时器（每 3s 保存一次）
+  // 自动保存：内容变化后**静止 5 秒**再写一次（不是每隔几秒无条件写）。
+  //   autosaveTimer —— 这次「静止等待」的定时器，每有改动就重新计时
+  //   lastSavedText —— 上一次写进文件的内容，用来跳过「改了又改回去」这类空写
   let autosaveTimer = null;
-  const AUTOSAVE_INTERVAL_MS = 3000;
+  let lastSavedText = null;
+  const AUTOSAVE_IDLE_MS = 5000;
   // 记录切换模式前视口最上方的 heading id，用于切回浏览模式时恢复滚动位置
   let lastViewHeadingId = null;
   // 文件浏览历史栈，用于链接跳转后返回
@@ -149,6 +152,7 @@
     cmEditor.on('change', () => {
       currentMarkdownText = cmEditor.getValue();
       scheduleLivePreviewRefresh();
+      scheduleAutosave();   // 改动后静止 5 秒才落盘（见 scheduleAutosave）
     });
 
     // 现代模式下目录没有渲染后的 DOM 可观察，改为根据光标位置高亮
@@ -1541,6 +1545,7 @@
     const file = await handle.getFile();
     const text = await file.text();
     currentMarkdownText = text;
+    lastSavedText = text;        // 刚读进来的内容就是磁盘上的，作为自动保存的基准
     headingOffsets = parseHeadingOffsets(text);
     const html = MdRender.renderMarkdown(text, marked);
     contentEl.innerHTML = html;
@@ -1989,6 +1994,7 @@
       await writable.write(cmEditor ? cmEditor.getValue() : editorEl.value);
       await writable.close();
       currentMarkdownText = cmEditor ? cmEditor.getValue() : editorEl.value;
+      lastSavedText = currentMarkdownText;   // 记住写进去的是什么，供自动保存比对
       if (!silent) setStatus('已保存', 'success');
     } catch (e) {
       console.error(e);
@@ -1997,22 +2003,24 @@
     }
   }
 
-  function startAutosave() {
-    if (autosaveTimer) return;
-    autosaveTimer = setInterval(async () => {
+  // 排一次自动保存：从现在起静止 AUTOSAVE_IDLE_MS 内没有新改动才真写。
+  // 每有改动就重新计时，所以连续打字期间一次都不会写，停下来 5 秒才落一次盘。
+  function scheduleAutosave() {
+    if (!isEditMode || !currentFile) return;
+    if (autosaveTimer) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => {
+      autosaveTimer = null;
       if (!isEditMode) return;
-      try {
-        await saveCurrentFile(true);
-      } catch (e) {
-        // 自动保存失败已在 saveCurrentFile 内提示，停止定时器避免反复报错
-        stopAutosave();
-      }
-    }, AUTOSAVE_INTERVAL_MS);
+      // 改了又改回去（内容与上次写盘的一致）就不写，别做无谓的整篇重写
+      const now = cmEditor ? cmEditor.getValue() : editorEl.value;
+      if (now === lastSavedText) return;
+      saveCurrentFile(true).catch(() => {});   // 失败已在 saveCurrentFile 内提示
+    }, AUTOSAVE_IDLE_MS);
   }
 
   function stopAutosave() {
     if (autosaveTimer) {
-      clearInterval(autosaveTimer);
+      clearTimeout(autosaveTimer);
       autosaveTimer = null;
     }
   }
@@ -2117,7 +2125,7 @@
         cmEditor.setValue(currentMarkdownText);
       }
       isEditMode = true;
-      startAutosave();
+      stopAutosave();          // 清掉可能残留的排期，之后由内容变化触发自动保存
     } else {
       // 回到传统模式：停在浏览态，重新渲染预览
       stopAutosave();
@@ -2178,7 +2186,7 @@
 
       isEditMode = true;
       applySurface();
-      startAutosave();
+      stopAutosave();          // 同上：进入编辑态先清排期
 
       if (cmEditor) {
         if (topHeadingId && headingOffsets[topHeadingId] !== undefined) {
@@ -2535,6 +2543,17 @@
     }
   }
 
+  // 传统编辑模式用的是 textarea（没有 CodeMirror），改动同样要排自动保存
+  editorEl.addEventListener('input', scheduleAutosave);
+
+  // 页面要走了（关标签 / 刷新）：尽力把还没排完的那次改动写下去。
+  // 异步写不一定来得及完成，但比直接丢掉好；真正的兜底仍是离开编辑态时的显式保存。
+  window.addEventListener('pagehide', () => {
+    if (!isEditMode || !currentFile) return;
+    const now = cmEditor ? cmEditor.getValue() : editorEl.value;
+    if (now !== lastSavedText) saveCurrentFile(true).catch(() => {});
+  });
+
   if (btnLoadFolder) {
     btnLoadFolder.addEventListener('click', selectFolder);
   }
@@ -2570,7 +2589,7 @@
   if (currentMode === 'modern') {
     if (cmEditor) {
       isEditMode = true;
-      startAutosave();
+      stopAutosave();          // 清掉可能残留的排期，之后由内容变化触发自动保存
     } else {
       // CodeMirror 未初始化成功时现代模式无法实现，退回传统模式
       currentMode = 'traditional';
