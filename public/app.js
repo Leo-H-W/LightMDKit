@@ -981,17 +981,20 @@
 
   // 表格行里的删除（Backspace / Delete）该删哪一段。
   //
-  // 两条规则，都是「看不见的东西不该被删掉」惹出来的：
-  //   1) `<br>` 是一个整体。逐字删会先留下 `<br` 这种半截标记 —— 既不是换行、
-  //      又被当普通文字显示（那一格还会从多行掉回单行再弹回来），删完一个
-  //      `<br>` 要按四次。落在它里面、或紧贴待删的那一侧，都整段删。
-  //   2) 管道符是表格结构、不是内容，现代模式下还根本看不见。默认删除会把它
-  //      吃掉，两个格子并成一个 —— 表现为「单元格内容删完后再按 Delete，把后
-  //      一个格子的格式改坏」（实测 1.md 的 `| d  | d  | …`，一次 Delete 就成了
-  //      `| d   d  | …`，4 个管道符剩 3 个）。这里改成跳过管道符、接着删隔壁
-  //      单元格的内容。顶到行首 / 行尾则不动：再删就是吞掉换行，把上下两行并成
-  //      一行，同样是破坏表格结构。
-  // 想真删管道符或换行，选中它们再删 —— 有选区时这里不接管。
+  // 原则：**删除只作用在当前单元格的内容上，不碰表格骨架**。现代模式下管道符
+  // 被压成 0 宽、完全看不见，光标顶到格子边界时，用户根本不知道自己在删什么，
+  // 结果要么把 `|` 吃掉（两个格子并成一个），要么接着删隔壁格子的内容（看着像
+  // 「后面的单元格被删掉了」，实测连按 Delete 十次能把后三格内容吃光）。所以：
+  //
+  //   1) `<br>` 是一个整体，落在它里面、或紧贴待删的那一侧，都整段删 —— 逐字删
+  //      会先留下 `<br` 这种半截标记，既不是换行又被当普通文字显示。
+  //   2) 待删的字符不在本格里（是 `|`）、光标压在 `|` 上、或顶到行首 / 行尾，
+  //      都什么都不做：越过边界就是动骨架（吞管道符、吞换行把两行并成一行）。
+  //   3) 其余情况交给默认的逐字删除。
+  //
+  // 只有**确实被渲染成表格**的行才这么管：判据跟渲染一致，用 findTableAtCursor
+  // 找「上面有分隔行的表格」，光长得像表格行的不算 —— 否则单独一行 `||` 也会被
+  // 保护起来，Backspace 删不掉（实测）。想删管道符或换行，选中它们再删。
   //
   // 返回 {from, to} —— 删这段；{noop:true} —— 什么都不删（也不交回默认）；
   // null —— 不接管，交回 CodeMirror 的默认删除。
@@ -1000,39 +1003,22 @@
     const text = cm.getLine(pos.line);
     if (text === undefined || !TABLE_ROW_RE.test(text)) return null;   // 先做便宜判断
     const t = tableLineTesters(cm);                                    // 这里才算围栏掩码
-    if (!t.isRow(pos.line)) return null;
+    if (!findTableAtCursor(cm, t)) return null;
+    const ch = pos.ch;
 
     // 光标落在 <br> 里、或紧贴它待删的那一侧 -> 整个标记一起删
-    const brTouching = (ch) => {
-      TABLE_BR_RE.lastIndex = 0;
-      let m;
-      while ((m = TABLE_BR_RE.exec(text)) !== null) {
-        const from = m.index, to = from + m[0].length;
-        if (ch > from && ch < to) return { from, to };
-        if (forward ? ch === from : ch === to) return { from, to };
-      }
-      return null;
-    };
-
-    const hit = brTouching(pos.ch);
-    if (hit) return hit;
-
-    if (forward && text[pos.ch] === '|') {
-      // 顶到本格末尾：跳过管道符，接着删下一格
-      let i = pos.ch;
-      while (i < text.length && text[i] === '|') i++;
-      if (i >= text.length) return { noop: true };          // 行尾：不吞换行
-      return brTouching(i) || { from: i, to: i + 1 };
+    TABLE_BR_RE.lastIndex = 0;
+    let m;
+    while ((m = TABLE_BR_RE.exec(text)) !== null) {
+      const from = m.index, to = from + m[0].length;
+      if (ch > from && ch < to) return { from, to };
+      if (forward ? ch === from : ch === to) return { from, to };
     }
-    if (!forward && pos.ch > 0 && text[pos.ch - 1] === '|') {
-      // 顶到本格开头：跳过管道符，接着删上一格
-      let i = pos.ch - 1;
-      while (i > 0 && text[i - 1] === '|') i--;
-      if (i === 0) return { noop: true };                   // 行首：不吞上一行的换行
-      return brTouching(i) || { from: i - 1, to: i };
-    }
-    if (!forward && pos.ch === 0) return { noop: true };    // 行首
-    if (forward && pos.ch >= text.length) return { noop: true };   // 行尾
+
+    // 到边界就停：管道符是骨架、换行是行界，都不能由「删内容」顺手带走
+    if (ch === 0 || ch === text.length) return { noop: true };          // 行首 / 行尾
+    if (text[ch] === '|') return { noop: true };                        // 光标压在管道符上 / 往后删的是它
+    if (!forward && text[ch - 1] === '|') return { noop: true };        // 本格开头，往前删的是上一格的边界
     return null;
   }
 
