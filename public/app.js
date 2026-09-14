@@ -979,40 +979,76 @@
     return null;
   }
 
-  // Backspace / Delete：单元格里的 `<br>` 当成一个整体，一次删干净。
+  // 表格行里的删除（Backspace / Delete）该删哪一段。
   //
-  // 默认是一个字符一个字符地删：删掉 `>` 会留下 `<br`，半截标记既不是换行、又
-  // 会被当普通文字显示出来（那一格还会从多行掉回单行），删完一个 `<br>` 要按
-  // 四次。这里把「光标落在 <br> 里面」与「光标紧贴 <br> 的待删那一侧」都当作
-  // 删整个标记；其余情况返回 CodeMirror.Pass，交回默认行为。
-  // 只管表格行里的 —— 表格外的 <br> 是普通文字，保持原有的逐字删除。
-  function brDeleteTarget(cm, forward) {
+  // 两条规则，都是「看不见的东西不该被删掉」惹出来的：
+  //   1) `<br>` 是一个整体。逐字删会先留下 `<br` 这种半截标记 —— 既不是换行、
+  //      又被当普通文字显示（那一格还会从多行掉回单行再弹回来），删完一个
+  //      `<br>` 要按四次。落在它里面、或紧贴待删的那一侧，都整段删。
+  //   2) 管道符是表格结构、不是内容，现代模式下还根本看不见。默认删除会把它
+  //      吃掉，两个格子并成一个 —— 表现为「单元格内容删完后再按 Delete，把后
+  //      一个格子的格式改坏」（实测 1.md 的 `| d  | d  | …`，一次 Delete 就成了
+  //      `| d   d  | …`，4 个管道符剩 3 个）。这里改成跳过管道符、接着删隔壁
+  //      单元格的内容。顶到行首 / 行尾则不动：再删就是吞掉换行，把上下两行并成
+  //      一行，同样是破坏表格结构。
+  // 想真删管道符或换行，选中它们再删 —— 有选区时这里不接管。
+  //
+  // 返回 {from, to} —— 删这段；{noop:true} —— 什么都不删（也不交回默认）；
+  // null —— 不接管，交回 CodeMirror 的默认删除。
+  function tableDeletePlan(cm, forward) {
     const pos = cm.getCursor();
-    const t = tableLineTesters(cm);
-    if (!t.isRow(pos.line)) return null;
     const text = cm.getLine(pos.line);
-    TABLE_BR_RE.lastIndex = 0;
-    let m;
-    while ((m = TABLE_BR_RE.exec(text)) !== null) {
-      const from = m.index, to = from + m[0].length;
-      if (pos.ch > from && pos.ch < to) return { from, to };               // 光标在 <br> 里
-      if (forward ? pos.ch === from : pos.ch === to) return { from, to };  // 紧贴它的前后
+    if (text === undefined || !TABLE_ROW_RE.test(text)) return null;   // 先做便宜判断
+    const t = tableLineTesters(cm);                                    // 这里才算围栏掩码
+    if (!t.isRow(pos.line)) return null;
+
+    // 光标落在 <br> 里、或紧贴它待删的那一侧 -> 整个标记一起删
+    const brTouching = (ch) => {
+      TABLE_BR_RE.lastIndex = 0;
+      let m;
+      while ((m = TABLE_BR_RE.exec(text)) !== null) {
+        const from = m.index, to = from + m[0].length;
+        if (ch > from && ch < to) return { from, to };
+        if (forward ? ch === from : ch === to) return { from, to };
+      }
+      return null;
+    };
+
+    const hit = brTouching(pos.ch);
+    if (hit) return hit;
+
+    if (forward && text[pos.ch] === '|') {
+      // 顶到本格末尾：跳过管道符，接着删下一格
+      let i = pos.ch;
+      while (i < text.length && text[i] === '|') i++;
+      if (i >= text.length) return { noop: true };          // 行尾：不吞换行
+      return brTouching(i) || { from: i, to: i + 1 };
     }
+    if (!forward && pos.ch > 0 && text[pos.ch - 1] === '|') {
+      // 顶到本格开头：跳过管道符，接着删上一格
+      let i = pos.ch - 1;
+      while (i > 0 && text[i - 1] === '|') i--;
+      if (i === 0) return { noop: true };                   // 行首：不吞上一行的换行
+      return brTouching(i) || { from: i - 1, to: i };
+    }
+    if (!forward && pos.ch === 0) return { noop: true };    // 行首
+    if (forward && pos.ch >= text.length) return { noop: true };   // 行尾
     return null;
   }
 
-  function tableBrDeleteKey(cm, forward) {
+  function applyTableDelete(cm, forward) {
     if (cm.somethingSelected()) return CodeMirror.Pass;   // 有选区时按默认删选区
-    const hit = brDeleteTarget(cm, forward);
-    if (!hit) return CodeMirror.Pass;
+    const plan = tableDeletePlan(cm, forward);
+    if (!plan) return CodeMirror.Pass;
+    if (plan.noop) return null;                           // 什么都不删，也不交回默认
     const line = cm.getCursor().line;
     // 与默认删除用同一个 origin，连续删除才会并进同一步撤销
-    cm.replaceRange('', { line, ch: hit.from }, { line, ch: hit.to }, '+delete');
+    cm.replaceRange('', { line, ch: plan.from }, { line, ch: plan.to }, '+delete');
     return null;
   }
 
-  function tableBackspaceKey(cm) { return tableBrDeleteKey(cm, false); }
-  function tableDeleteKey(cm) { return tableBrDeleteKey(cm, true); }
+  function tableBackspaceKey(cm) { return applyTableDelete(cm, false); }
+  function tableDeleteKey(cm) { return applyTableDelete(cm, true); }
 
   // 表格行里鼠标点击的落点修正。
   //
