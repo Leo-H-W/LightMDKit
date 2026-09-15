@@ -181,7 +181,7 @@
       if (currentMode !== 'modern') return;
       updateActiveTocItemByCursor();
       updateSepReveal();        // 光标进入表头行时分隔行要展开
-      updateActiveTableRow();   // 数据行右侧的「…」按钮按它显隐
+      updateActiveTableRow();   // 数据行 / 表头行末尾的「…」按钮按它显隐
       normalizeTableCursorSticky();   // 光标落在格子内容末尾时贴向前一个字符
     });
 
@@ -724,12 +724,11 @@
     const blocks = [];
     for (let i = 0; i < lineCount; i++) {
       if (!isRow(i) || !(i + 1 < lineCount) || fence[i + 1] || !TABLE_SEP_RE.test(cmEditor.getLine(i + 1))) continue;
-      // 数据行到下一个分隔行为止。必须在这里停：分隔行标志着一张表的数据区结束，
-      // 继续往下会把下一张表的表头也吞进来（两张表紧邻时尤其明显）。
-      let end = i + 2;
-      while (end < lineCount && isRow(end) && !fence[end] && !TABLE_SEP_RE.test(cmEditor.getLine(end))) end++;
-      blocks.push({ from: i, to: end - 1, sep: i + 1 });
-      i = end - 1;
+      // 数据区到哪结束由 tableDataEnd 统一判定（它会连「下一张表的表头」一起排除）
+      const isSep = (n) => n < lineCount && !fence[n] && TABLE_SEP_RE.test(cmEditor.getLine(n));
+      const to = tableDataEnd({ lineCount, isRow, isSep }, i + 1);
+      blocks.push({ from: i, to, sep: i + 1 });
+      i = to;
     }
 
     const sigs = blocks.map((b) => blockSignature(b.from, b.to));
@@ -827,6 +826,15 @@
 
     // 只给需要重建的块打标注；复用中的块由 CodeMirror 自己维护标注位置
     for (const b of dirty) {
+      // 表头的「…」要贴在**整张表**的右边界之外，先取本表最靠右的那一列。
+      // 不能按表头自己的末格定位：表头少写一组管道符时（数据行 4 列、表头 3 列）
+      // 按钮会落进表格中间。
+      let rightmostCol = 0;
+      for (let n = b.from; n <= b.to; n++) {
+        if (n === b.sep) continue;
+        rightmostCol = Math.max(rightmostCol, pipePositions(cmEditor.getLine(n)).length - 2);
+      }
+
       for (let n = b.from; n <= b.to; n++) {
         const text = cmEditor.getLine(n);
         if (n === b.sep) {
@@ -853,15 +861,22 @@
           const from = pipes[p] + 1, to = pipes[p + 1];
           cells.push(Object.assign({ p, from, to }, splitCellPieces(text, from, to)));
         }
-        // 数据行：行末挂一个「…」行菜单按钮（表头行、分隔行不挂 —— 删掉它们
-        // 表格就不再是表格了）。按钮绝对定位在「本行最后一格的右边界之外」，
-        // 放在两个渲染分支之前：含 <br> 的行走绝对定位网格，同样要有这个按钮。
+        // 行末的「…」菜单按钮。分隔行不挂 —— 删掉它表格就不再是表格了。
+        // 按钮放在两个渲染分支之前：含 <br> 的行走绝对定位网格，同样要有这个按钮。
+        //
+        // 表头行与数据行挂的是两个不同的菜单：
+        //   表头 -> 表格级操作（删除整张表），定位在整张表的右边界之外
+        //   数据行 -> 行级操作（删除本行），定位在本行最后一格的右边界之外
+        if (n === b.from) {
+          addTableMenuWidget(b, n, text.length, colLeft[rightmostCol] + colWidthEm[rightmostCol]
+            + ROW_MENU_GAP_EM, '表格操作', openHeaderMenu);
+        }
         if (n > b.sep && cells.length) {
           const lastCol = cells[cells.length - 1].p;
           const rightEm = (colLeft[lastCol] !== undefined)
             ? colLeft[lastCol] + colWidthEm[lastCol]
             : colLeft[colLeft.length - 1] + colWidthEm[colWidthEm.length - 1];
-          addRowMenuWidget(b, n, text.length, rightEm + ROW_MENU_GAP_EM);
+          addTableMenuWidget(b, n, text.length, rightEm + ROW_MENU_GAP_EM, '行操作', openRowMenu);
         }
 
         const segs = Math.max(1, ...cells.map((c) => c.pieces.length));
@@ -893,10 +908,11 @@
     cmEditor.refresh();
   }
 
-  // ---------------- 数据行右侧的「…」行菜单 ----------------
+  // ---------------- 行末 / 表头末的「…」菜单 ----------------
   //
   // 光标（或鼠标）落到某个数据行时，在这行**最后一格的右边界之外**露出一个「…」，
   // 点开是行操作菜单，目前只有「删除本行」。
+  // 表头行同理，只是按钮落在**整张表的右边界之外**，菜单里是表格级操作（「删除表格」）。
   //
   // 三个要点：
   //   1. 按钮挂在行末的零长度 CodeMirror widget 上（replacedWith），由 CSS 绝对
@@ -909,7 +925,8 @@
   const ROW_MENU_GAP_EM = 0.4;      // 按钮与最后一格之间的间隙（em，与列宽同一套换算）
   let rowMenuEl = null;             // 菜单全局单例，避免每行都造一张
 
-  function addRowMenuWidget(b, n, ch, leftEm) {
+  // 表头行与数据行共用这一个挂载函数，区别只在按钮文案与点开后调哪个菜单。
+  function addTableMenuWidget(b, n, ch, leftEm, title, openMenu) {
     const handle = cmEditor.getLineHandle(n);
     cmEditor.addLineClass(handle, 'text', 'cm-tbl-row');
     b.rowClasses.push([handle, 'cm-tbl-row']);
@@ -922,13 +939,13 @@
     btn.type = 'button';
     btn.className = 'cm-tbl-menu-btn';
     btn.textContent = '⋯';     // ⋯
-    btn.title = '行操作';
+    btn.title = title;
     // 别让 CodeMirror 收到这次按下 —— 否则它会顺手把光标挪到别处
     btn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openRowMenu(handle, btn);
+      openMenu(handle, btn);
     });
     anchor.appendChild(btn);
 
@@ -945,7 +962,9 @@
 
   function updateActiveTableRow() {
     const pos = cmEditor.getCursor();
-    const handle = isRowShapedDataLine(pos.line) ? cmEditor.getLineHandle(pos.line) : null;
+    // 数据行与表头行都要 —— 两类行末尾各有自己的「…」按钮，都靠这个类显形
+    const onMenuLine = isRowShapedDataLine(pos.line) || isRowShapedHeaderLine(pos.line);
+    const handle = onMenuLine ? cmEditor.getLineHandle(pos.line) : null;
     if (handle === activeRowHandle) return;
     if (activeRowHandle) cmEditor.removeLineClass(activeRowHandle, 'text', 'cm-tbl-row-active');
     activeRowHandle = handle;
@@ -982,6 +1001,16 @@
     return false;
   }
 
+  // 轻量版「这行是表格表头行」：下一行是分隔行就是（表头行与分隔行都形如 `| … |`，
+  // 靠这一条把表头从数据行里摘出来）。和 isRowShapedDataLine 一样挂在每次光标移动上，
+  // 不算围栏掩码 —— 不如单纯看下一行便宜。代码围栏里的行被误判也没关系，那里没按钮。
+  function isRowShapedHeaderLine(line) {
+    const text = cmEditor.getLine(line);
+    if (text === undefined || !TABLE_ROW_RE.test(text) || TABLE_SEP_RE.test(text)) return false;
+    const below = cmEditor.getLine(line + 1);
+    return below !== undefined && TABLE_SEP_RE.test(below);
+  }
+
   function closeRowMenu() {
     if (!rowMenuEl) return;
     rowMenuEl.remove();
@@ -1000,26 +1029,26 @@
     return line >= n;                                        // n 起是数据区，n-1 是分隔行
   }
 
-  function openRowMenu(handle, btn) {
+  // 建菜单 + 定位 + 挂成单例。items = [{ label, run }]，run 在菜单收起之后才调 ——
+  // 菜单里存的行号随时可能因为编辑而失效，先收起再重算。
+  function showTableMenu(btn, items) {
     closeRowMenu();
-    const line = cmEditor.getLineNumber(handle);
-    if (line === null || line < 0 || !isDataRowLine(line)) return;
-
     const el = document.createElement('div');
     el.className = 'cm-tbl-rowmenu';
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'cm-tbl-rowmenu-item';
-    del.textContent = '删除本行';
-    del.addEventListener('mousedown', (e) => e.preventDefault());
-    del.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const at = cmEditor.getLineNumber(handle);   // 再查一次：菜单开着时可能又编辑过
-      closeRowMenu();
-      if (at !== null && at >= 0 && isDataRowLine(at)) deleteTableRowAt(at);
-    });
-    el.appendChild(del);
+    for (const it of items) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'cm-tbl-rowmenu-item';
+      item.textContent = it.label;
+      item.addEventListener('mousedown', (e) => e.preventDefault());
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeRowMenu();
+        it.run();
+      });
+      el.appendChild(item);
+    }
     document.body.appendChild(el);
 
     // 默认摆在按钮正下方；贴到视口边缘就往回收
@@ -1031,6 +1060,19 @@
     // 内容一变就收起来：菜单里的行号可能已经不作数了
     rowMenuOffChange = () => closeRowMenu();
     cmEditor.on('change', rowMenuOffChange);
+  }
+
+  function openRowMenu(handle, btn) {
+    closeRowMenu();
+    const line = cmEditor.getLineNumber(handle);
+    if (line === null || line < 0 || !isDataRowLine(line)) return;
+    showTableMenu(btn, [{
+      label: '删除本行',
+      run() {
+        const at = cmEditor.getLineNumber(handle);   // 再查一次：菜单开着时可能又编辑过
+        if (at !== null && at >= 0 && isDataRowLine(at)) deleteTableRowAt(at);
+      },
+    }]);
   }
 
   // 删除第 line 行整行（连同它的换行）
@@ -1047,6 +1089,60 @@
     // 光标落到顶上来的那一行的第一格（没有了就不动）
     const at = Math.min(line, cmEditor.lineCount() - 1);
     if (at >= 0 && isDataRowLine(at)) moveToTableCell(cmEditor, at, 0);
+    cmEditor.focus();
+  }
+
+  // 完整版「这行是表格表头行」：算围栏掩码。只在开菜单时调，不在光标移动路径上。
+  function isTableHeaderLine(line) {
+    const t = tableLineTesters(cmEditor);
+    if (!t.isRow(line) || t.isSep(line)) return false;
+    return t.isRow(line + 1) && t.isSep(line + 1);
+  }
+
+  // 表头行所在的整张表：[表头行 .. 最后一条数据行]（分隔行夹在中间）。
+  // 数据区边界与 refreshTableMarks 找块、findTableAtCursor 找光标所在表共用 tableDataEnd。
+  function tableBlockAtHeader(headerLine) {
+    const t = tableLineTesters(cmEditor);
+    if (!t.isRow(headerLine) || t.isSep(headerLine)) return null;
+    if (!(t.isRow(headerLine + 1) && t.isSep(headerLine + 1))) return null;
+    return { from: headerLine, to: tableDataEnd(t, headerLine + 1) };
+  }
+
+  function openHeaderMenu(handle, btn) {
+    closeRowMenu();
+    const line = cmEditor.getLineNumber(handle);
+    if (line === null || line < 0 || !isTableHeaderLine(line)) return;
+    showTableMenu(btn, [{
+      label: '删除表格',
+      run() {
+        const at = cmEditor.getLineNumber(handle);   // 再查一次：菜单开着时可能又编辑过
+        if (at !== null && at >= 0 && isTableHeaderLine(at)) deleteTableAt(at);
+      },
+    }]);
+  }
+
+  // 删掉表头所在的那张表：表头行 + 分隔行 + 全部数据行。
+  // 表格前后的空行不动 —— 只删表格自己占的行。没有二次确认，但整表删除是一次
+  // 原子编辑，Ctrl+Z 能一次撤销回来。
+  function deleteTableAt(headerLine) {
+    const block = tableBlockAtHeader(headerLine);
+    if (!block) return;
+    const { from, to } = block;
+    const count = cmEditor.lineCount();
+    if (to < count - 1) {
+      // 常规情况：连同 to 后面那个换行一起删，不留空行
+      cmEditor.replaceRange('', { line: from, ch: 0 }, { line: to + 1, ch: 0 });
+    } else if (from > 0) {
+      // 表格顶到文件末尾：后面没有换行可删，改删它前面那个换行
+      cmEditor.replaceRange('',
+        { line: from - 1, ch: cmEditor.getLine(from - 1).length },
+        { line: to, ch: cmEditor.getLine(to).length });
+    } else {
+      // 整个文档就是这一张表：没有换行可借，直接清空
+      cmEditor.replaceRange('', { line: from, ch: 0 }, { line: to, ch: cmEditor.getLine(to).length });
+    }
+    const at = Math.min(from, cmEditor.lineCount() - 1);
+    if (at >= 0) cmEditor.setCursor({ line: at, ch: 0 });
     cmEditor.focus();
   }
 
@@ -1073,6 +1169,24 @@
     };
   }
 
+  // 从本表的「分隔行」往下走，返回数据区的最后一行（含）。三处共用：块扫描
+  // （refreshTableMarks）、光标所在表（findTableAtCursor）、表头所在表（tableBlockAtHeader）。
+  //
+  // 停在三处，缺一不可：
+  //   ① 非表格行（空行、正文）
+  //   ② 分隔行 —— 它标志着一张表的数据区结束
+  //   ③ **下一张表的表头行** —— 它自己的下一行是分隔行
+  //
+  // ③ 必须显式判：只看「本行是不是分隔行」的话，两张表紧邻（中间没有空行）时下一张表
+  // 的表头会被吞进本表，那张表的分隔行与数据行就落在块外、按原始文本渲染
+  // （实测两张表都渲染不出来，只剩一堆 `| --- | --- |`）。
+  function tableDataEnd(t, sep) {
+    let to = sep;
+    while (to + 1 < t.lineCount && t.isRow(to + 1) && !t.isSep(to + 1)
+           && !(to + 2 < t.lineCount && t.isSep(to + 2))) to++;
+    return to;
+  }
+
   // 找出光标所在表格的范围；不在表格里返回 null。
   // 关键是「遇到分隔行就停」：两张表紧邻（中间没有空行）时，一路向上找第一个
   // 分隔行会拿到上一张表的，列数随之算错（实测 4 列表格新增出 3 列）。
@@ -1092,8 +1206,7 @@
     }
     if (sep === -1) return null;
 
-    let to = sep;                                        // 数据区最后一行：遇到下一个分隔行就停
-    while (to + 1 < t.lineCount && t.isRow(to + 1) && !t.isSep(to + 1)) to++;
+    const to = tableDataEnd(t, sep);                     // 数据区最后一行（见 tableDataEnd）
     // 把行判定也带上：tableCols / insertTableRow 拿到这个对象后还要按行判断，
     // 挂在对象上比一路透传参数省事，也不会有「t 到底是判定器还是表格」的歧义。
     return { sep, header: sep - 1, to, isRow: t.isRow, isSep: t.isSep, lineCount: t.lineCount };
